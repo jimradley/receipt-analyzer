@@ -1,0 +1,50 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject NavigationManager Nav
+
+<div class="app-shell">
+    <header class="app-bar">
+        <div class="app-bar__inner">
+            <a class="app-bar__brand" href="">
+                <span class="app-bar__logo" aria-hidden="true">🧾</span>
+                <span class="app-bar__title">Receipt Analyzer</span>
+            </a>
+            @if (_onHistory)
+            {
+                <a class="app-bar__nav" href="">Upload</a>
+            }
+            else
+            {
+                <a class="app-bar__nav" href="history">History</a>
+            }
+        </div>
+    </header>
+
+    <main class="app-main">
+        <div class="app-container">
+            @Body
+        </div>
+    </main>
+</div>
+
+@code {
+    private bool _onHistory;
+
+    protected override void OnInitialized()
+    {
+        UpdateLocation();
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        UpdateLocation();
+        StateHasChanged();
+    }
+
+    private void UpdateLocation() =>
+        _onHistory = Nav.ToBaseRelativePath(Nav.Uri).TrimStart('/')
+            .StartsWith("history", StringComparison.OrdinalIgnoreCase);
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+}

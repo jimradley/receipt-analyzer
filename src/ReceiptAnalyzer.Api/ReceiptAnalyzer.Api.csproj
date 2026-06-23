@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\ReceiptAnalyzer.Agent\ReceiptAnalyzer.Agent.csproj" />
+    <ProjectReference Include="..\ReceiptAnalyzer.Ledger\ReceiptAnalyzer.Ledger.csproj" />
+    <ProjectReference Include="..\ReceiptAnalyzer.Reports\ReceiptAnalyzer.Reports.csproj" />
+    <ProjectReference Include="..\ReceiptAnalyzer.Pwa\ReceiptAnalyzer.Pwa.csproj" />
+    <ProjectReference Include="..\ReceiptAnalyzer.Jobs\ReceiptAnalyzer.Jobs.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="9.0.7" />
+    <PackageReference Include="Magick.NET-Q8-AnyCPU" Version="14.14.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

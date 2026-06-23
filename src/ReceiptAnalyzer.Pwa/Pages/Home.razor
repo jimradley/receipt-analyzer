@@ -1,0 +1,179 @@
+@page "/"
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>Receipt Analyzer</PageTitle>
+
+<div class="lead-block">
+    <h1 class="lead-block__title">Analyse a receipt</h1>
+    <p class="lead-block__sub">Snap a UK supermarket receipt — we extract every item, flag American-owned brands and ultra-processed foods, check prices elsewhere, and save a report.</p>
+</div>
+
+@if (!_healthy)
+{
+    <div class="alert alert-warning">Connecting to the server… if this hangs, you may need to complete the email login first.</div>
+}
+
+<div class="card">
+    <div class="card-body">
+        <label class="uploader @(_busy || !_healthy ? "is-disabled" : "")">
+            <span class="uploader__icon" aria-hidden="true">📷</span>
+            <span class="uploader__text">@(_selectedFileName is null ? "Tap to choose or photograph a receipt" : "Change photo")</span>
+            <span class="uploader__hint">JPEG, PNG or HEIC · up to 10 MB</span>
+            <InputFile OnChange="OnFileSelected" accept="image/jpeg,image/png,image/heic" capture="environment"
+                       class="uploader__input" disabled="@(!_healthy || _busy)" />
+        </label>
+
+        @if (_selectedFileName is not null)
+        {
+            <div class="file-chip">
+                <span class="file-chip__name">@_selectedFileName</span>
+                <span class="file-chip__size">@FormatBytes(_selectedFileSize)</span>
+            </div>
+        }
+
+        <button class="btn btn-primary w-100 mt-3"
+                @onclick="UploadAsync"
+                disabled="@(!_healthy || _busy || _file is null)">
+            @if (_busy)
+            {
+                <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                <span>Analysing… (30–90s)</span>
+            }
+            else
+            {
+                <span>Analyse receipt</span>
+            }
+        </button>
+
+        @if (_error is not null)
+        {
+            <div class="alert alert-danger mt-3 mb-0">@_error</div>
+        }
+    </div>
+</div>
+
+@if (_result is not null)
+{
+    <div class="card mt-3">
+        <div class="card-header">
+            <strong>@_result.Retailer</strong>
+            @if (!string.IsNullOrEmpty(_result.ReceiptDate))
+            {
+                <span class="text-muted"> · @_result.ReceiptDate</span>
+            }
+            <span class="text-muted"> · @_result.ItemCount items</span>
+            <div class="report-path">@_result.ReportPath</div>
+        </div>
+        <div class="card-body">
+            <MarkdownView Content="@_result.Markdown" />
+        </div>
+    </div>
+}
+
+@code {
+    private bool _healthy;
+    private bool _busy;
+    private string? _error;
+    private IBrowserFile? _file;
+    private string? _selectedFileName;
+    private long _selectedFileSize;
+    private AnalyseResponse? _result;
+
+    private const long MaxBytes = 10 * 1024 * 1024;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var resp = await Http.GetAsync("api/health");
+            _healthy = resp.IsSuccessStatusCode;
+        }
+        catch
+        {
+            _healthy = false;
+        }
+    }
+
+    private void OnFileSelected(InputFileChangeEventArgs e)
+    {
+        _file = e.File;
+        _selectedFileName = e.File.Name;
+        _selectedFileSize = e.File.Size;
+        _error = null;
+        _result = null;
+    }
+
+    private async Task UploadAsync()
+    {
+        if (_file is null) return;
+
+        if (_file.Size > MaxBytes)
+        {
+            _error = $"Image exceeds {MaxBytes / 1024 / 1024} MB limit.";
+            return;
+        }
+
+        _busy = true;
+        _error = null;
+        _result = null;
+
+        try
+        {
+            using var content = new MultipartFormDataContent();
+            using var stream = _file.OpenReadStream(MaxBytes);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+            var part = new StreamContent(ms);
+            part.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(_file.ContentType ?? "image/jpeg");
+            content.Add(part, "image", _file.Name);
+
+            var resp = await Http.PostAsync("api/analyses", content);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync();
+                _error = $"Server returned {(int)resp.StatusCode}: {body}";
+                return;
+            }
+
+            var job = await resp.Content.ReadFromJsonAsync<AnalyseResponse>();
+            if (job is null) { _error = "No job returned by server."; return; }
+
+            // Poll until the background pipeline finishes (or fails).
+            for (var i = 0; i < 120 && job is not null && job.Status is "Queued" or "Running"; i++)
+            {
+                await Task.Delay(2000);
+                job = await Http.GetFromJsonAsync<AnalyseResponse>($"api/analyses/{job.Id}");
+            }
+
+            if (job is null)
+                _error = "Lost track of the analysis job.";
+            else if (job.Status == "Completed")
+                _result = job;
+            else if (job.Status == "Failed")
+                _error = job.Error ?? "Analysis failed.";
+            else
+                _error = "Analysis is taking longer than expected — check History shortly.";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F0} KB";
+        return $"{bytes / 1024.0 / 1024.0:F1} MB";
+    }
+
+    private sealed record AnalyseResponse(
+        string Id, string Status, string? Error,
+        string? ReportPath, string? Markdown, string? Retailer, string? ReceiptDate, int ItemCount);
+}

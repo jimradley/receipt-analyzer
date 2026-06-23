@@ -1,0 +1,27 @@
+.history__title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: .25rem 0 .9rem;
+}
+
+.history__ledgers {
+    display: flex;
+    gap: .5rem;
+    flex-wrap: wrap;
+}
+
+/* List of past reports — themed Bootstrap list-group */
+::deep .list-group-item {
+    border-color: var(--line);
+    padding: .7rem 1rem;
+}
+
+::deep .list-group-item-action:hover {
+    background: var(--brand-soft);
+}
+
+::deep .list-group-item.active {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+}

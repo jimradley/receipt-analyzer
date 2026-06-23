@@ -1,0 +1,57 @@
+## .NET
+[Bb]in/
+[Oo]bj/
+*.exe
+*.dll
+*.pdb
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## IDEs
+.idea/
+.vs/
+*.user
+*.userprefs
+*.vshost.exe
+*.vshost.exe.config
+*.vshost.exe.manifest
+*.suo
+*.sln.docstates
+
+## OS
+[Tt]humbs.db
+[Ee]hthumbs.db
+Desktop.ini
+
+## Secrets & Config
+.env
+appsettings.Development.json
+launchSettings.json
+*.tmp
+*.bak
+
+## Project Specific
+/output/
+/reports/
+.state/
+**/.state/
+*.md.tmp
+
+## Local AI / editor context (personal & infra notes — do not publish)
+CLAUDE.md
+.claude/
+.playwright-cli/
+
+## Local run artifacts
+*.log
+nohup.out
+
+## Personal data — never commit receipts, generated reports, or job state
+**/Receipts/
+_ManualTest/
+*.jpg
+*.jpeg
+*.heic
+*.heif

@@ -1,0 +1,18 @@
+@using Markdig
+
+<div class="md">@Rendered</div>
+
+@code {
+    [Parameter] public string? Content { get; set; }
+
+    // Pipe tables for the items table; DisableHtml so receipt/LLM text can't inject markup.
+    private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder()
+        .UsePipeTables()
+        .UseEmphasisExtras()
+        .UseSoftlineBreakAsHardlineBreak()
+        .DisableHtml()
+        .Build();
+
+    private MarkupString Rendered =>
+        (MarkupString)(string.IsNullOrWhiteSpace(Content) ? "" : Markdown.ToHtml(Content, Pipeline));
+}

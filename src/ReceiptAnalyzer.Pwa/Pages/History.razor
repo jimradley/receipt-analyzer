@@ -1,0 +1,135 @@
+@page "/history"
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>Receipt Analyzer — History</PageTitle>
+
+<div class="history">
+    <h1 class="history__title">History</h1>
+
+    <div class="history__ledgers mb-3">
+        <button class="btn btn-outline-secondary btn-sm" @onclick='() => LoadLedger("buy-elsewhere")'>Buy-elsewhere ledger</button>
+        <button class="btn btn-outline-secondary btn-sm" @onclick='() => LoadLedger("alternatives")'>Alternatives ledger</button>
+    </div>
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+
+    <div class="row">
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header">Past reports</div>
+                <div class="list-group list-group-flush">
+                    @if (_reports is null)
+                    {
+                        <div class="list-group-item text-muted">Loading…</div>
+                    }
+                    else if (_reports.Count == 0)
+                    {
+                        <div class="list-group-item text-muted">No reports yet.</div>
+                    }
+                    else
+                    {
+                        @foreach (var r in _reports)
+                        {
+                            <button class="list-group-item list-group-item-action @(r.Name == _selected ? "active" : "")"
+                                    @onclick="() => LoadReport(r.Name)">
+                                <div>@DisplayName(r.Name)</div>
+                                <small class="@(r.Name == _selected ? "" : "text-muted")">@r.Modified.ToLocalTime().ToString("dd MMM yyyy HH:mm")</small>
+                            </button>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-8">
+            @if (_busy)
+            {
+                <div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</div>
+            }
+            else if (_content is not null)
+            {
+                <div class="card">
+                    <div class="card-header"><strong>@(_title ?? _selected)</strong></div>
+                    <div class="card-body">
+                        <MarkdownView Content="@_content" />
+                    </div>
+                </div>
+            }
+            else
+            {
+                <p class="text-muted">Select a report or ledger to view it.</p>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<ReportSummary>? _reports;
+    private string? _selected;
+    private string? _title;
+    private string? _content;
+    private bool _busy;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync() => await RefreshList();
+
+    private async Task RefreshList()
+    {
+        try
+        {
+            _reports = await Http.GetFromJsonAsync<List<ReportSummary>>("api/reports");
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not load reports: {ex.Message}";
+        }
+    }
+
+    private async Task LoadReport(string name)
+    {
+        _selected = name;
+        _title = DisplayName(name);
+        await LoadInto($"api/reports/{Uri.EscapeDataString(name)}");
+    }
+
+    private async Task LoadLedger(string which)
+    {
+        _selected = null;
+        _title = which == "buy-elsewhere" ? "Buy-elsewhere ledger" : "Alternatives ledger";
+        await LoadInto($"api/ledgers/{which}");
+    }
+
+    private async Task LoadInto(string url)
+    {
+        _busy = true;
+        _error = null;
+        _content = null;
+        try
+        {
+            var resp = await Http.GetAsync(url);
+            if (resp.IsSuccessStatusCode)
+                _content = await resp.Content.ReadAsStringAsync();
+            else
+                _error = $"Not found ({(int)resp.StatusCode}).";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string DisplayName(string fileName) =>
+        fileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase)
+            ? fileName[..^3]
+            : fileName;
+
+    private sealed record ReportSummary(string Name, DateTimeOffset Modified);
+}
