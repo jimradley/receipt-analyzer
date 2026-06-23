@@ -32,7 +32,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
         _options = options.Value;
         _logger = logger;
         _rules = new Lazy<string>(LoadRules);
-        _seasonalityJson = new Lazy<string>(() => LoadEmbeddedResource(
+        _seasonalityJson = new Lazy<string>(() => EmbeddedResource.Load(
             "ReceiptAnalyzer.Agent.Resources.uk-seasonality.json"));
 
         var apiKey = Environment.GetEnvironmentVariable(_options.ApiKeyEnvVar)
@@ -288,14 +288,6 @@ public sealed class ClaudeAgent : IAnalysisAgent
     );
 
     private sealed record SeasonalityRaw(List<SeasonalityItemRaw> Items);
-
-    private static string LoadEmbeddedResource(string name)
-    {
-        using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name)
-            ?? throw new InvalidOperationException($"Embedded resource '{name}' not found.");
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
-    }
 
     private static string ExtractJson(string text)
     {

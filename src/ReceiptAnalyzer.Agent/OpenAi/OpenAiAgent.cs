@@ -23,6 +23,7 @@ public sealed class OpenAiAgent : IAnalysisAgent
     private readonly AgentOptions _options;
     private readonly ILogger<OpenAiAgent> _logger;
     private readonly Lazy<string> _rules;
+    private readonly Lazy<string> _seasonalityJson;
 
     public OpenAiAgent(HttpClient http, IOptions<AgentOptions> options, ILogger<OpenAiAgent> logger)
     {
@@ -30,6 +31,8 @@ public sealed class OpenAiAgent : IAnalysisAgent
         _options = options.Value;
         _logger = logger;
         _rules = new Lazy<string>(LoadRules);
+        _seasonalityJson = new Lazy<string>(() => EmbeddedResource.Load(
+            "ReceiptAnalyzer.Agent.Resources.uk-seasonality.json"));
 
         var apiKey = Environment.GetEnvironmentVariable(_options.ApiKeyEnvVar)
             ?? throw new InvalidOperationException($"Env var '{_options.ApiKeyEnvVar}' is not set.");
@@ -127,8 +130,63 @@ public sealed class OpenAiAgent : IAnalysisAgent
         return text;
     }
 
-    public Task<SeasonalityResult> AssessSeasonalityAsync(IReadOnlyList<ProduceItem> items, int month, CancellationToken ct)
-        => throw new NotImplementedException("Seasonality not yet implemented for OpenAI provider.");
+    public async Task<SeasonalityResult> AssessSeasonalityAsync(IReadOnlyList<ProduceItem> items, int month, CancellationToken ct)
+    {
+        // The UK seasonality calendar goes into the system prompt (OpenAI has no cached prefix).
+        var taskPrompt = SeasonalitySystemPrompt + "\n\n## UK Seasonality Reference\n\n" + _seasonalityJson.Value;
+
+        var monthName = new System.Globalization.DateTimeFormatInfo().GetMonthName(month);
+        var itemsJson = JsonSerializer.Serialize(
+            items.Select(i => new { index = i.Index, name = i.Name }), JsonOptions);
+
+        var userText = $$"""
+            Current month: {{monthName}}
+
+            Assess these items from a UK supermarket receipt:
+            {{itemsJson}}
+
+            Return ONLY valid JSON of this exact shape:
+            {
+              "items": [
+                { "index": 0, "name": "Asparagus", "isInSeason": true, "likelyOrigin": null, "ukSeasonMonths": "April–June" }
+              ]
+            }
+            Rules:
+            - Only include items that are fresh produce (fruit, vegetables, fresh herbs). Skip eggs, meat, fish, dairy, canned/frozen goods, non-food, and packaged produce with no seasonal variation.
+            - isInSeason: true if UK-grown and genuinely in season this month per the reference calendar.
+            - likelyOrigin: null when in season; set to the likely country/region when out of UK season.
+            - ukSeasonMonths: the typical UK outdoor season, e.g. "April–June" or "July–September".
+            - For always-imported items (bananas, avocados, etc.) set isInSeason=true and likelyOrigin to their typical country; ukSeasonMonths=null.
+            """;
+
+        var messages = BuildMessages(taskPrompt, userText);
+        var json = await CallAsync(messages, "seasonality", ct);
+
+        var parsed = JsonSerializer.Deserialize<SeasonalityRaw>(json, JsonOptions)
+            ?? throw new InvalidOperationException("Cannot parse seasonality JSON.");
+
+        var assessments = parsed.Items.Select(r => new SeasonalityAssessment(
+            r.Index, r.Name, r.IsInSeason, r.LikelyOrigin, r.UkSeasonMonths)).ToList();
+
+        return new SeasonalityResult(assessments);
+    }
+
+    private const string SeasonalitySystemPrompt = """
+You assess UK supermarket fresh produce for seasonal availability.
+Use the UK seasonality reference calendar provided below.
+Focus only on genuinely fresh produce — skip packaged non-produce items, eggs, fish, meat, and dairy.
+Output ONLY valid JSON. No commentary.
+""";
+
+    private sealed record SeasonalityItemRaw(
+        int Index,
+        string Name,
+        bool IsInSeason,
+        string? LikelyOrigin,
+        string? UkSeasonMonths
+    );
+
+    private sealed record SeasonalityRaw(List<SeasonalityItemRaw> Items);
 
     private void ReportUsage(string stage, int input, int output)
     {

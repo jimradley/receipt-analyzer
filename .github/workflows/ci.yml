@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      # Blazor WebAssembly may require the wasm-tools workload; no-op if not needed.
+      - name: Restore workloads
+        run: dotnet workload restore ReceiptAnalyzer.sln
+
+      - name: Restore
+        run: dotnet restore ReceiptAnalyzer.sln
+
+      - name: Build
+        run: dotnet build ReceiptAnalyzer.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/ReceiptAnalyzer.Tests/ReceiptAnalyzer.Tests.csproj -c Release --no-build
