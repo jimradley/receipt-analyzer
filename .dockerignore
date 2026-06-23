@@ -1,0 +1,12 @@
+# Keep host build artifacts out of the image build context. Without this,
+# `COPY . .` overwrites the container's restore with Windows bin/obj (whose
+# project.assets.json references local NuGet paths), breaking --no-restore publish.
+**/bin/
+**/obj/
+**/.vs/
+**/.idea/
+.git/
+.github/
+*.user
+docs/
+**/.DS_Store

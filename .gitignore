@@ -35,6 +35,7 @@ launchSettings.json
 ## Project Specific
 /output/
 /reports/
+/publish/
 .state/
 **/.state/
 *.md.tmp
