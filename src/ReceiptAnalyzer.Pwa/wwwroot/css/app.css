@@ -234,6 +234,16 @@ pre {
     color: var(--muted) !important;
 }
 
+/* Visually hide the file input (rendered by <InputFile>, a child component, so it
+   sits outside Home's scoped CSS). The .uploader label is the click target. */
+.uploader__input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    overflow: hidden;
+}
+
 code {
     color: var(--brand-dark);
 }

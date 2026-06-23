@@ -55,15 +55,6 @@
     color: var(--muted);
 }
 
-/* The real file input is hidden; the label is the hit target */
-.uploader__input {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    overflow: hidden;
-}
-
 .file-chip {
     display: flex;
     align-items: center;
