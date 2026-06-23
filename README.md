@@ -4,6 +4,10 @@ A .NET 9 tool for extracting health, price, and provenance data from UK supermar
 
 This project uses LLMs (specifically Claude) to transform receipt photos into a structured ledger, highlighting ultra-processed foods (NOVA levels), US-owned brands, and potential savings at other retailers.
 
+<p align="center">
+  <img src="docs/upload-mobile.png" alt="Receipt Analyzer upload screen on mobile" width="320" />
+</p>
+
 ## Features
 
 - **Receipt Parsing:** Converts images (JPEG, PNG, HEIC) into structured JSON including items, unit prices, and retailers.
