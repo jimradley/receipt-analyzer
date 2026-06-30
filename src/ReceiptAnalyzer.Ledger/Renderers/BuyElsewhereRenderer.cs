@@ -11,7 +11,7 @@ public static class BuyElsewhereRenderer
         sb.AppendLine();
         sb.AppendLine("Items regularly purchased at Waitrose or Sainsbury's that are consistently cheaper elsewhere.");
         sb.AppendLine();
-        sb.AppendLine("| Item | Store Paid | Price Paid | Best Price | Where | Saving | Last Seen |");
+        sb.AppendLine("| Item | Store Paid | Latest Paid | Historic Low | Where | Saving vs Low | Last Checked |");
         sb.AppendLine("|---|---|---|---|---|---|---|");
 
         foreach (var e in ledger.BuyElsewhere.OrderByDescending(x => x.Saving))

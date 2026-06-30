@@ -68,6 +68,18 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
   - In-repo docs use placeholders (`<your-domain>`, `<origin-ip>`), never the real values — as this file does.
   - Default new docs to scrubbed-and-scanned before committing.
 
+## 9. Blazor WASM trimming breaks reflection-based System.Text.Json on the WebAuthn (Fido2) types
+
+- **What bit us:** the passkey ceremony failed in production with `ConstructorContainsNullParameterNames, Fido2NetLib.PublicKeyCredentialRpEntity` / `SerializationNotSupportedParentType, System.Object Path: $.` Dev (un-trimmed) worked; only the published WASM broke — so it looked like a stale-cache problem and wasn't.
+- **Root cause:** Release WASM is **trimmed**, which strips constructor *parameter names* from the Fido2 model assembly. System.Text.Json's reflection serializer needs those names to bind parameterised constructors, so it throws at runtime. Two reflection paths hit it: (a) marshalling the strongly-typed `CredentialCreateOptions` / `AssertionOptions` / raw-response objects across **JS interop** (Blazor uses the JSRuntime's default reflection serializer), and (b) the models' own `.FromJson()` / `.ToJson()`.
+- **What did NOT fix it:** `<TrimmerRootAssembly Include="Fido2.Models" />` — rooting the assembly keeps the *types* but the trimmer still drops parameter-name metadata. Verified ineffective against a genuinely fresh deploy.
+- **Fix:** keep reflection STJ off the Fido types entirely. Use the package's source-generated `FidoBlazorSerializerContext` for every (de)serialisation, and pass **JSON strings** (not objects) across the JS-interop boundary — `JsonSerializer.Serialize(opts, ctx.CredentialCreateOptions)` → JS `JSON.parse` → ceremony → JS `JSON.stringify` → `JsonSerializer.Deserialize(json, ctx.AuthenticatorAttestationRawResponse)`. Source-gen contracts are trim-safe because the metadata is emitted at compile time.
+- **How it was caught:** a CDP **virtual authenticator** (`WebAuthn.addVirtualAuthenticator`, `transport:'internal'`, `isUserVerified:true`) driven via Playwright reproduced the full enrol + unlock ceremony headlessly against the live site — no phone needed. A fresh in-memory browser profile also rules out service-worker cache as the cause.
+- **Rules:**
+  - In Blazor WASM, anything crossing JS interop or STJ that isn't your own simple POCO needs a **source-generated `JsonSerializerContext`** — assume reflection serialization will break under trimming.
+  - Don't trust `TrimmerRootAssembly` to preserve constructor parameter names; prefer source-gen over fighting the trimmer.
+  - Reproduce WebAuthn flows with a **CDP virtual authenticator** before declaring a passkey bug a caching issue.
+
 ---
 
 ## What worked / keep doing

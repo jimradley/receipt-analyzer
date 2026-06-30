@@ -43,6 +43,12 @@
     letter-spacing: -.01em;
 }
 
+.app-bar__links {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+}
+
 .app-bar__nav {
     color: #fff;
     text-decoration: none;

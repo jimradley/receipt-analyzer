@@ -31,7 +31,11 @@ public sealed record ItemClassification(
     string? ParentCountry,
     bool IsOwnLabel,
     string? SwapSuggestion,
-    string? Notes
+    string? Notes,
+    // The abbreviated receipt name expanded to a full, searchable product name
+    // (e.g. "BELVOIR HOM LEM GING" → "Belvoir Homemade Lemonade Ginger"). Used as the
+    // search term for price-checking; null/blank falls back to the original receipt name.
+    string? CanonicalName = null
 );
 
 public sealed record BrandedItemForCheck(
@@ -71,6 +75,21 @@ public sealed record SeasonalityResult(
     IReadOnlyList<SeasonalityAssessment> Items
 );
 
+/// <summary>
+/// One item on the current receipt that you've bought cheaper before, drawn from your own durable
+/// purchase history (not market prices). <see cref="BestRetailer"/>/<see cref="BestDate"/> are when
+/// and where you paid <see cref="BestUnitPrice"/>.
+/// </summary>
+public sealed record PersonalPriceComparison(
+    string Item,
+    decimal PaidNow,
+    string RetailerNow,
+    decimal BestUnitPrice,
+    string BestRetailer,
+    DateOnly BestDate,
+    decimal Saving
+);
+
 public sealed record AnalysisResult(
     ReceiptExtraction Extraction,
     ItemClassifications Classifications,
@@ -78,5 +97,6 @@ public sealed record AnalysisResult(
     SeasonalityResult? Seasonality,
     DateTimeOffset GeneratedAt,
     IReadOnlyList<StageUsage>? Usage = null,
-    decimal? EstimatedCostGbp = null
+    decimal? EstimatedCostGbp = null,
+    IReadOnlyList<PersonalPriceComparison>? PersonalPrices = null
 );

@@ -45,9 +45,13 @@ public sealed class ClaudeAgent : IAnalysisAgent
         }
     }
 
-    public async Task<ReceiptExtraction> ExtractReceiptAsync(byte[] imageBytes, string mediaType, CancellationToken ct)
+    public async Task<ReceiptExtraction> ExtractReceiptAsync(byte[] imageBytes, string mediaType, CancellationToken ct, string? correctionHint = null)
     {
         var systemBlocks = BuildCachedSystem(ExtractionSystemPrompt);
+
+        var promptText = string.IsNullOrWhiteSpace(correctionHint)
+            ? ExtractionUserPrompt
+            : ExtractionUserPrompt + "\n\nIMPORTANT: " + correctionHint;
 
         var userContent = new JsonArray
         {
@@ -64,11 +68,11 @@ public sealed class ClaudeAgent : IAnalysisAgent
             new JsonObject
             {
                 ["type"] = "text",
-                ["text"] = ExtractionUserPrompt
+                ["text"] = promptText
             }
         };
 
-        var json = await CallAsync(systemBlocks, userContent, prefill: "{", maxTokens: 4096, stage: "extract", ct);
+        var json = await CallAsync(systemBlocks, userContent, maxTokens: 4096, stage: "extract", ct);
         return JsonSerializer.Deserialize<ReceiptExtraction>(json, JsonOptions)
             ?? throw new InvalidOperationException("Vision response could not be parsed as ReceiptExtraction.");
     }
@@ -90,11 +94,36 @@ public sealed class ClaudeAgent : IAnalysisAgent
             new JsonObject
             {
                 ["type"] = "text",
-                ["text"] = $"Classify each item. Items as JSON:\n{JsonSerializer.Serialize(indexed, JsonOptions)}\n\nReturn JSON of shape {{\"items\":[...]}} where each entry includes the original index."
+                ["text"] = $$"""
+                    Classify each item. Items as JSON:
+                    {{JsonSerializer.Serialize(indexed, JsonOptions)}}
+
+                    Return ONLY valid JSON of this EXACT shape (one entry per input item, preserving its index):
+                    {
+                      "items": [
+                        {
+                          "index": 0,
+                          "canonicalName": "Belvoir Homemade Lemonade Ginger",
+                          "novaLevel": 1,
+                          "isAmerican": false,
+                          "parentCompany": null,
+                          "parentCountry": null,
+                          "isOwnLabel": false,
+                          "swapSuggestion": null,
+                          "notes": null
+                        }
+                      ]
+                    }
+                    Field rules:
+                    - Include EVERY input item exactly once, keeping its original index.
+                    - novaLevel: ALWAYS set 1-4 for any food or drink (best-effort, never null for edibles); use null only for non-food (household, toiletries).
+                    - canonicalName: expand the abbreviated/garbled receipt name into the full real product name (brand + product, and size if obvious) so it can be searched online — e.g. "BELVOIR HOM LEM GING" → "Belvoir Homemade Lemonade Ginger", "BEAVERTON NECK OIL" → "Beavertown Neck Oil IPA". Correct obvious mis-spellings. If genuinely unidentifiable, repeat the original name.
+                    - isOwnLabel, isAmerican, parentCompany, parentCountry, swapSuggestion: per the rules in the system prompt.
+                    """
             }
         };
 
-        var json = await CallAsync(systemBlocks, userContent, prefill: "{", maxTokens: 4096, stage: "classify", ct);
+        var json = await CallAsync(systemBlocks, userContent, maxTokens: 4096, stage: "classify", ct);
         return JsonSerializer.Deserialize<ItemClassifications>(json, JsonOptions)
             ?? throw new InvalidOperationException("Classification response could not be parsed.");
     }
@@ -264,7 +293,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
             }
         };
 
-        var json = await CallAsync(systemBlocks, userContent, prefill: "{", maxTokens: 2048, stage: "seasonality", ct);
+        var json = await CallAsync(systemBlocks, userContent, maxTokens: 2048, stage: "seasonality", ct);
 
         var parsed = JsonSerializer.Deserialize<SeasonalityRaw>(json, JsonOptions)
             ?? throw new InvalidOperationException("Cannot parse seasonality JSON.");
@@ -312,8 +341,11 @@ public sealed class ClaudeAgent : IAnalysisAgent
         string? SkippedSummary
     );
 
-    private async Task<string> CallAsync(JsonArray systemBlocks, JsonArray userContent, string prefill, int maxTokens, string stage, CancellationToken ct)
+    private async Task<string> CallAsync(JsonArray systemBlocks, JsonArray userContent, int maxTokens, string stage, CancellationToken ct)
     {
+        // No assistant-turn prefill: Claude 4.6+ models (incl. Sonnet 4.6) reject a prefilled final
+        // assistant turn with a 400. The prompts already demand "ONLY valid JSON"; ExtractJson salvages
+        // the object from any stray preamble.
         var body = new JsonObject
         {
             ["model"] = _options.Model,
@@ -325,14 +357,6 @@ public sealed class ClaudeAgent : IAnalysisAgent
                 {
                     ["role"] = "user",
                     ["content"] = userContent
-                },
-                new JsonObject
-                {
-                    ["role"] = "assistant",
-                    ["content"] = new JsonArray
-                    {
-                        new JsonObject { ["type"] = "text", ["text"] = prefill }
-                    }
                 }
             }
         };
@@ -364,7 +388,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
 
         ReportUsage(stage, doc["usage"]);
 
-        return prefill + text;
+        return ExtractJson(text);
     }
 
     private JsonArray BuildCachedSystem(string taskPrompt)
@@ -441,6 +465,14 @@ Extract this receipt to JSON of shape:
 }
 If the photo is not a receipt, set isReceipt=false and leave items empty.
 Use the printed item names verbatim.
+
+Reading rules:
+- ONE receipt only. If the photo shows more than one receipt, pick the single most complete and legible one, extract only its items, and note which you chose in "notes".
+- If the image is rotated or sideways, read it in its correct orientation.
+- Transcribe EVERY line item, top to bottom — do not skip faint, partially-cut, or multi-buy lines.
+- Items only: do NOT include loyalty/points-summary lines (e.g. Nectar/More points), card/payment, change, or the savings line as items.
+- If the receipt prints a "number of items" / item count, make your list match it.
+- Set "confidence" below 0.5 and explain in "notes" when the photo is blurry, creased, cropped, rotated, or otherwise hard to read.
 """;
 
     private const string ClassificationSystemPrompt = """
@@ -450,10 +482,17 @@ Apply these rules strictly (from the Shopping Agent rules in the cached prefix):
 - NOVA 2 = culinary ingredients (oils, salt, sugar, herbs/spices).
 - NOVA 3 = processed (cheeses, preserved meats, simple breads).
 - NOVA 4 = ultra-processed (multiple additives, emulsifiers, refined starches).
+- Alcoholic drinks — wine, beer, cider, prosecco, champagne, spirits — are NOVA 1; they are
+  fermented/distilled, NOT ultra-processed. Do NOT classify a plain wine/beer/spirit as NOVA 4.
+  Only pre-mixed/RTD cocktails or alcopops with added flavourings/sweeteners are NOVA 4.
 - isAmerican = TRUE only if the brand's parent company is headquartered in the USA.
   Strict by ownership, not perception. Example: Schwartz=McCormick (USA, true);
   Pladis brands (McVitie's etc.)=Turkish (false); Maltesers=Mars (USA, true).
-- isOwnLabel = TRUE for supermarket own-label (e.g. Morrisons "M ", Waitrose Essential, Tesco own).
+- isOwnLabel = TRUE for supermarket own-label. Recognise these receipt abbreviations/prefixes as own-label:
+  Waitrose = "WAITROSE","WR","WR ESS","ESS" (Essential),"DUCHY"; Morrisons = "M " prefix,"MORR","THE BEST","M SAVERS";
+  Sainsbury's = "BY SAINSBURY'S","JS","TASTE THE DIFFERENCE"; Asda = "ASDA","JUST ESSENTIALS","SMARTPRICE";
+  Tesco = "TESCO" (recognise as own-label, but NEVER recommend Tesco); Co-op = "CO OP","COOP". Most Aldi/Lidl items are own-label.
+  Also treat a plain generic descriptor with no distinct brand as own-label.
 - swapSuggestion: only set for NOVA 3/4 items OR American brands; one short sentence.
 Output ONLY valid JSON. No commentary.
 """;
@@ -467,12 +506,12 @@ Output ONLY valid JSON. No commentary.
 
     private const string PriceCheckSystemPrompt = """
 You are a UK supermarket price comparison assistant.
-Search for current UK supermarket prices for each branded item provided.
-Check major UK supermarkets: Sainsbury's, Asda, Morrisons, Waitrose, Ocado, Aldi, Lidl.
+The item names provided have already been expanded to real product names — search the current price for each at major UK supermarkets: Sainsbury's, Asda, Morrisons, Waitrose, Ocado, Aldi, Lidl.
 Do NOT use Tesco — it is not near the user; never include Tesco prices or Tesco Clubcard.
 Include loyalty card prices where available (Sainsbury's Nectar, Morrisons More).
 Use trolley.co.uk as a reference source.
-Skip items that are commodity produce, unbranded, or where you cannot find a reliable price.
+Make a genuine effort to find EVERY item before giving up — these are branded products that should be findable; try the brand + product name.
+Only set bestPrice=null when the item is truly an unbranded loose commodity (e.g. loose fruit/veg) or supermarket own-label with no cross-retailer equivalent. Do NOT skip a recognisable brand just because the first search is unclear.
 Output ONLY valid JSON. No commentary.
 """;
 }

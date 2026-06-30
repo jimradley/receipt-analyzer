@@ -7,6 +7,9 @@ public sealed class JobsOptions
 {
     public TimeSpan Retention { get; init; } = TimeSpan.FromDays(14);
 
+    /// <summary>How many days a cached price stays usable before the item is re-checked via web search.</summary>
+    public int PriceCacheDays { get; init; } = 7;
+
     public decimal UsdToGbp { get; init; } = 0.79m;
 
     /// <summary>USD per-MTok rates keyed by model id. Models absent here contribute no cost estimate.</summary>

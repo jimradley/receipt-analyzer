@@ -1,0 +1,130 @@
+@page "/costs"
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>Receipt Analyzer — Costs</PageTitle>
+
+<div class="costs">
+    <h1 class="costs__title">Costs</h1>
+    <p class="text-muted">Estimated LLM spend computed from token usage — not a provider account balance. Web-search surcharges aren't included.</p>
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+    else if (_summary is null)
+    {
+        <div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</div>
+    }
+    else
+    {
+        <div class="row mb-4">
+            <div class="col-sm-4">
+                <div class="card text-center">
+                    <div class="card-header">Today</div>
+                    <div class="card-body"><h3>£@_summary.TodayGbp.ToString("F4")</h3></div>
+                </div>
+            </div>
+            <div class="col-sm-4">
+                <div class="card text-center">
+                    <div class="card-header">This month</div>
+                    <div class="card-body"><h3>£@_summary.MonthGbp.ToString("F4")</h3></div>
+                </div>
+            </div>
+            <div class="col-sm-4">
+                <div class="card text-center">
+                    <div class="card-header">All time</div>
+                    <div class="card-body">
+                        <h3>£@_summary.AllTimeGbp.ToString("F4")</h3>
+                        <small class="text-muted">@_summary.ReceiptCount receipt(s)</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">By model</div>
+            <div class="card-body">
+                @if (_summary.ByModel.Count == 0)
+                {
+                    <p class="text-muted mb-0">No usage recorded yet.</p>
+                }
+                else
+                {
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr><th>Model</th><th class="text-end">Input</th><th class="text-end">Output</th><th class="text-end">Cache read</th><th class="text-end">Est. £</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var m in _summary.ByModel)
+                            {
+                                <tr>
+                                    <td>@m.Model</td>
+                                    <td class="text-end">@m.InputTokens.ToString("N0")</td>
+                                    <td class="text-end">@m.OutputTokens.ToString("N0")</td>
+                                    <td class="text-end">@m.CacheReadTokens.ToString("N0")</td>
+                                    <td class="text-end">@(m.Gbp is { } g ? $"£{g:F4}" : "—")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">Recent receipts</div>
+            <div class="card-body">
+                @if (_summary.Recent.Count == 0)
+                {
+                    <p class="text-muted mb-0">No receipts analysed yet.</p>
+                }
+                else
+                {
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr><th>When</th><th>Retailer</th><th class="text-end">Est. £</th></tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var r in _summary.Recent)
+                            {
+                                <tr>
+                                    <td>@r.CompletedAt.ToLocalTime().ToString("dd MMM yyyy HH:mm")</td>
+                                    <td>@(string.IsNullOrWhiteSpace(r.Retailer) ? "—" : r.Retailer)</td>
+                                    <td class="text-end">@(r.CostGbp is { } c ? $"£{c:F4}" : "—")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private UsageSummary? _summary;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _summary = await Http.GetFromJsonAsync<UsageSummary>("api/usage");
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not load usage: {ex.Message}";
+        }
+    }
+
+    private sealed record UsageSummary(
+        decimal TodayGbp, decimal MonthGbp, decimal AllTimeGbp, int ReceiptCount,
+        List<ModelUsageSummary> ByModel, List<RecentUsageSummary> Recent);
+
+    private sealed record ModelUsageSummary(
+        string Model, long InputTokens, long OutputTokens,
+        long CacheReadTokens, long CacheCreationTokens, decimal? Gbp);
+
+    private sealed record RecentUsageSummary(DateTimeOffset CompletedAt, string? Retailer, decimal? CostGbp);
+}

@@ -1,0 +1,204 @@
+@page "/spend"
+@using System.Globalization
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>Receipt Analyzer — Spend</PageTitle>
+
+<div class="spend">
+    <h1>Spend &amp; habits</h1>
+    <p class="text-muted">Where your money goes over time, and the repeatedly-bought items worth a second look — all learned from your receipts.</p>
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+    else if (_data is null)
+    {
+        <div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</div>
+    }
+    else if (_data.Spend.ReceiptsAllTime == 0)
+    {
+        <p class="text-muted">No purchase history yet — analyse a few receipts and your spend will appear here.</p>
+    }
+    else
+    {
+        <div class="row g-3 mb-4">
+            <div class="col-4">
+                <div class="card h-100"><div class="card-body text-center">
+                    <div class="text-muted"><small>This month</small></div>
+                    <div class="fs-5 fw-bold">@Money(_data.Spend.ThisMonth)</div>
+                </div></div>
+            </div>
+            <div class="col-4">
+                <div class="card h-100"><div class="card-body text-center">
+                    <div class="text-muted"><small>Last month</small></div>
+                    <div class="fs-5 fw-bold">@Money(_data.Spend.LastMonth)</div>
+                </div></div>
+            </div>
+            <div class="col-4">
+                <div class="card h-100"><div class="card-body text-center">
+                    <div class="text-muted"><small>All time</small></div>
+                    <div class="fs-5 fw-bold">@Money(_data.Spend.TotalAllTime)</div>
+                </div></div>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header"><strong>By month</strong></div>
+            <div class="card-body p-0">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>Month</th><th class="text-end">Spend</th><th class="text-end">Receipts</th></tr></thead>
+                    <tbody>
+                        @foreach (var m in RecentMonths())
+                        {
+                            <tr>
+                                <td>@MonthLabel(m.Month)</td>
+                                <td class="text-end">@Money(m.Total)</td>
+                                <td class="text-end text-muted">@m.Receipts</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header"><strong>By retailer</strong></div>
+            <div class="card-body p-0">
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>Retailer</th><th class="text-end">Spend</th><th class="text-end">Share</th><th class="text-end">Receipts</th></tr></thead>
+                    <tbody>
+                        @foreach (var r in _data.Spend.Retailers)
+                        {
+                            <tr>
+                                <td>@r.Retailer</td>
+                                <td class="text-end">@Money(r.Total)</td>
+                                <td class="text-end text-muted">@Percent(r.Share)</td>
+                                <td class="text-end text-muted">@r.Receipts</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        @if (_data.Offenders.American.Count > 0)
+        {
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>🇺🇸 Repeat US-brand buys</strong>
+                    <span class="badge bg-danger">@_data.Offenders.American.Count</span>
+                </div>
+                <div class="card-body p-0">
+                    @OffenderTable(_data.Offenders.American, false)
+                </div>
+            </div>
+        }
+
+        @if (_data.Offenders.UltraProcessed.Count > 0)
+        {
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>🚩 Repeat ultra-processed buys (NOVA 4)</strong>
+                    <span class="badge bg-warning text-dark">@_data.Offenders.UltraProcessed.Count</span>
+                </div>
+                <div class="card-body p-0">
+                    @OffenderTable(_data.Offenders.UltraProcessed, true)
+                </div>
+            </div>
+        }
+
+        @if (_data.Offenders.American.Count == 0 && _data.Offenders.UltraProcessed.Count == 0)
+        {
+            <p class="text-muted"><small>No repeatedly-bought US-owned or ultra-processed items in the last year. 👍</small></p>
+        }
+    }
+</div>
+
+@code {
+    private SpendInsights? _data;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _data = await Http.GetFromJsonAsync<SpendInsights>("api/spend");
+        }
+        catch (Exception ex)
+        {
+            _error = "Could not load spend: " + ex.Message;
+        }
+    }
+
+    // Most recent twelve months, newest first.
+    private List<MonthSpend> RecentMonths()
+    {
+        var months = _data!.Spend.Months;
+        var skip = Math.Max(0, months.Count - 12);
+        return months.Skip(skip).Reverse().ToList();
+    }
+
+    private RenderFragment OffenderTable(IReadOnlyList<RepeatOffender> items, bool showNova) => builder =>
+    {
+        // Built imperatively to keep the markup region simple; mirrors the styling of the tables above.
+        var seq = 0;
+        builder.OpenElement(seq++, "table");
+        builder.AddAttribute(seq++, "class", "table table-sm align-middle mb-0");
+        builder.AddMarkupContent(seq++, HeaderHtml(showNova));
+        builder.OpenElement(seq++, "tbody");
+        foreach (var o in items)
+        {
+            builder.AddMarkupContent(seq++, RowHtml(o, showNova));
+        }
+        builder.CloseElement();
+        builder.CloseElement();
+    };
+
+    private static string HeaderHtml(bool showNova)
+    {
+        var nova = showNova ? "<th class=\"text-end\">NOVA</th>" : "<th>Brand</th>";
+        return "<thead><tr><th>Item</th>" + nova +
+               "<th class=\"text-end\">Times</th><th class=\"text-end\">Spent</th><th>Where</th></tr></thead>";
+    }
+
+    private static string RowHtml(RepeatOffender o, bool showNova)
+    {
+        var middle = showNova
+            ? "<td class=\"text-end\">" + (o.NovaLevel?.ToString() ?? "—") + "</td>"
+            : "<td class=\"text-muted\"><small>" + Esc(o.ParentCompany ?? "—") + "</small></td>";
+        return "<tr><td>" + Esc(o.Item) + "</td>" + middle +
+               "<td class=\"text-end\">" + o.TimesBought + "</td>" +
+               "<td class=\"text-end\">£" + o.TotalSpent.ToString("F2") + "</td>" +
+               "<td class=\"text-muted\"><small>" + Esc(string.Join(", ", o.Stores)) + "</small></td></tr>";
+    }
+
+    private static string Esc(string s) =>
+        s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+    private static string Money(decimal v) => "£" + v.ToString("N2", CultureInfo.GetCultureInfo("en-GB"));
+
+    private static string Percent(double share) => Math.Round(share * 100).ToString("F0") + "%";
+
+    private static string MonthLabel(string yyyyMM) =>
+        DateTime.TryParseExact(yyyyMM, "yyyy-MM", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+            ? d.ToString("MMM yyyy", CultureInfo.GetCultureInfo("en-GB"))
+            : yyyyMM;
+
+    private sealed record SpendInsights(SpendSummary Spend, RepeatOffenders Offenders);
+
+    private sealed record SpendSummary(
+        decimal TotalAllTime, decimal ThisMonth, decimal LastMonth, int ReceiptsAllTime,
+        List<MonthSpend> Months, List<RetailerSpend> Retailers);
+
+    private sealed record MonthSpend(string Month, decimal Total, int Receipts);
+
+    private sealed record RetailerSpend(string Retailer, decimal Total, int Receipts, double Share);
+
+    private sealed record RepeatOffenders(List<RepeatOffender> American, List<RepeatOffender> UltraProcessed);
+
+    private sealed record RepeatOffender(
+        string Item, int TimesBought, decimal TotalSpent, DateOnly LastBought,
+        List<string> Stores, int? NovaLevel, string? ParentCompany);
+}

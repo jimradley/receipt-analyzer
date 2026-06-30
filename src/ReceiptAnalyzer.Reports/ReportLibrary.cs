@@ -19,7 +19,7 @@ public sealed class ReportLibrary
 
     public ReportLibrary(string outputDir) => _dir = outputDir;
 
-    /// <summary>Per-receipt reports (the dd-MMMM-yy.md files), newest first. Ledgers are excluded.</summary>
+    /// <summary>Per-receipt reports (date-retailer-job markdown files), newest first. Ledgers are excluded.</summary>
     public IReadOnlyList<ReportSummary> ListReports()
     {
         if (!Directory.Exists(_dir)) return [];

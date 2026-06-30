@@ -25,6 +25,10 @@ async function onInstall(event) {
         .filter(asset => !offlineAssetsExclude.some(pattern => pattern.test(asset.url)))
         .map(asset => new Request(asset.url, { integrity: asset.hash, cache: 'no-cache' }));
     await caches.open(cacheName).then(cache => cache.addAll(assetsRequests));
+
+    // Activate this updated worker immediately instead of waiting for all tabs to close,
+    // so a redeploy takes effect on the next load rather than getting stuck on the old shell.
+    await self.skipWaiting();
 }
 
 async function onActivate(event) {
@@ -35,9 +39,18 @@ async function onActivate(event) {
     await Promise.all(cacheKeys
         .filter(key => key.startsWith(cacheNamePrefix) && key !== cacheName)
         .map(key => caches.delete(key)));
+
+    // Take control of open clients right away (pairs with skipWaiting above).
+    await self.clients.claim();
 }
 
 async function onFetch(event) {
+    // Never serve API calls from cache — auth and data must always hit the network.
+    const requestUrl = new URL(event.request.url);
+    if (requestUrl.pathname.startsWith('/api/')) {
+        return fetch(event.request);
+    }
+
     let cachedResponse = null;
     if (event.request.method === 'GET') {
         // For all navigation requests, try to serve index.html from cache,

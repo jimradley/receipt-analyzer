@@ -1,0 +1,114 @@
+@page "/staples"
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>Receipt Analyzer — Staples</PageTitle>
+
+<div class="staples">
+    <h1 class="staples__title">Staples &amp; replenishment</h1>
+    <p class="text-muted">What you buy regularly and when it's likely due to run out — learned from how often each item appears on your receipts.</p>
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+    else if (_result is null)
+    {
+        <div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</div>
+    }
+    else if (_result.Staples.Count == 0)
+    {
+        <p class="text-muted">Nothing to predict yet — analyse a few more receipts so a buying pattern can be learned (needs an item on at least three separate shops).</p>
+    }
+    else
+    {
+        @foreach (var group in _groups)
+        {
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>@group.Title</strong>
+                    <span class="badge @group.Badge">@group.Items.Count</span>
+                </div>
+                <div class="card-body p-0">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Item</th><th>When</th><th>Every</th>
+                                <th>Last bought</th><th class="text-end">Last price</th><th>Where</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var s in group.Items)
+                            {
+                                <tr>
+                                    <td>@s.Item <span title="@RegularityTitle(s.Regularity)" style="display:inline-block;width:.5rem;height:.5rem;border-radius:50%;margin-left:.4rem;background:@RegularityColour(s.Regularity)"></span></td>
+                                    <td>@DueText(s)</td>
+                                    <td class="text-muted">~@(s.CadenceDays)d</td>
+                                    <td class="text-muted">@s.LastPurchased.ToString("d MMM yy")</td>
+                                    <td class="text-end">£@s.LastUnitPrice.ToString("F2")</td>
+                                    <td class="text-muted"><small>@StoresText(s)</small></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        }
+    }
+
+    @if (_result is not null && _result.InsufficientDataItems > 0)
+    {
+        <p class="text-muted"><small>@_result.InsufficientDataItems item(s) seen but not bought often enough yet to predict.</small></p>
+    }
+</div>
+
+@code {
+    private ReplenishmentResult? _result;
+    private string? _error;
+    private readonly List<GroupVm> _groups = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _result = await Http.GetFromJsonAsync<ReplenishmentResult>("api/staples");
+            if (_result is not null)
+            {
+                AddGroup("Due now", "bg-danger", "Overdue");
+                AddGroup("Due soon", "bg-warning text-dark", "DueSoon");
+                AddGroup("On track", "bg-secondary", "OnTrack");
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = "Could not load staples: " + ex.Message;
+        }
+    }
+
+    private void AddGroup(string title, string badge, string status)
+    {
+        var items = _result!.Staples.Where(s => s.Status == status).ToList();
+        if (items.Count > 0) _groups.Add(new GroupVm(title, badge, items));
+    }
+
+    private static string DueText(StaplePrediction s) =>
+        s.DueInDays < 0 ? (-s.DueInDays) + "d overdue"
+        : s.DueInDays == 0 ? "due today"
+        : "in " + s.DueInDays + "d";
+
+    private static string StoresText(StaplePrediction s) => string.Join(", ", s.Stores);
+
+    private static string RegularityColour(double r) =>
+        r >= 0.66 ? "#198754" : r >= 0.33 ? "#ffc107" : "#adb5bd";
+
+    private static string RegularityTitle(double r) =>
+        r >= 0.66 ? "Bought very regularly" : r >= 0.33 ? "Bought fairly regularly" : "Irregular — prediction is rough";
+
+    private sealed record GroupVm(string Title, string Badge, List<StaplePrediction> Items);
+
+    private sealed record ReplenishmentResult(List<StaplePrediction> Staples, int InsufficientDataItems);
+
+    private sealed record StaplePrediction(
+        string Key, string Item, int PurchaseCount, int CadenceDays, DateOnly LastPurchased,
+        int DueInDays, string Status, decimal LastUnitPrice, List<string> Stores, double Regularity);
+}

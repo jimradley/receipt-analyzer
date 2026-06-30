@@ -20,6 +20,9 @@ public static class JobsServiceCollectionExtensions
         services.AddSingleton(sp => new AnalysisPipeline(
             sp.GetRequiredService<IAnalysisAgent>(),
             sp.GetRequiredService<LedgerStore>(),
+            sp.GetRequiredService<PriceCacheStore>(),
+            sp.GetRequiredService<ReceiptAnalyzer.Reports.UsageLedgerStore>(),
+            sp.GetRequiredService<PurchaseHistoryStore>(),
             sp.GetRequiredService<JobStore>(),
             outputDir,
             sp.GetRequiredService<JobsOptions>(),
@@ -53,6 +56,7 @@ public static class JobsServiceCollectionExtensions
         return new JobsOptions
         {
             Retention = TimeSpan.FromDays(configuration.GetValue("Jobs:RetentionDays", 14)),
+            PriceCacheDays = configuration.GetValue("Jobs:PriceCacheDays", 7),
             UsdToGbp = configuration.GetValue("Pricing:UsdToGbp", 0.79m),
             Pricing = pricing,
         };

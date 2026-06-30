@@ -1,0 +1,117 @@
+@page "/stores"
+@using System.Net.Http.Json
+@inject HttpClient Http
+
+<PageTitle>Receipt Analyzer — Stores</PageTitle>
+
+<div class="stores">
+    <h1 class="stores__title">Shopping by store</h1>
+    <p class="text-muted">What to buy at each store — items that are cheaper here than where you paid, plus your rated wines available here. Ordered by total saving.</p>
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+    else if (_result is null)
+    {
+        <div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</div>
+    }
+    else if (_result.Stores.Count == 0)
+    {
+        <p class="text-muted">Nothing to show yet — analyse a few receipts to build the buy-elsewhere list.</p>
+    }
+    else
+    {
+        @foreach (var store in _result.Stores)
+        {
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>@store.Store</strong>
+                    @if (store.TotalSaving > 0)
+                    {
+                        <span class="badge bg-success">Save £@store.TotalSaving.ToString("F2")</span>
+                    }
+                </div>
+                <div class="card-body">
+                    @if (store.Groceries.Count > 0)
+                    {
+                        <table class="table table-sm align-middle mb-3">
+                            <thead>
+                                <tr><th>Item</th><th class="text-end">Best price</th><th class="text-end">Save</th><th>Vs.</th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var g in store.Groceries)
+                                {
+                                    <tr>
+                                        <td>@g.Item</td>
+                                        <td class="text-end">£@g.BestPrice.ToString("F2")</td>
+                                        <td class="text-end text-success"><strong>£@g.Saving.ToString("F2")</strong></td>
+                                        <td class="text-muted"><small>£@g.PricePaid.ToString("F2") @@ @g.StorePaid</small></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+
+                    @if (store.Wines.Count > 0)
+                    {
+                        <h6 class="text-muted">🍷 Wines here</h6>
+                        <table class="table table-sm mb-0">
+                            <thead>
+                                <tr><th>Wine</th><th>Style</th><th class="text-end">Price</th><th></th></tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var w in store.Wines)
+                                {
+                                    <tr>
+                                        <td>@w.Wine</td>
+                                        <td class="text-muted">@w.Grape</td>
+                                        <td class="text-end">@w.Price</td>
+                                        <td><span class="badge @(w.Tier == "Top pick" ? "bg-primary" : "bg-secondary")">@w.Tier</span></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+
+                    @if (store.Groceries.Count == 0 && store.Wines.Count == 0)
+                    {
+                        <p class="text-muted mb-0">Nothing here right now.</p>
+                    }
+                </div>
+            </div>
+        }
+
+        @if (_result.HiddenGroceryItems > 0)
+        {
+            <p class="text-muted"><small>@_result.HiddenGroceryItems item(s) hidden — only cheaper at a store outside your set (e.g. Tesco / Co-op).</small></p>
+        }
+    }
+</div>
+
+@code {
+    private ShoppingListResult? _result;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _result = await Http.GetFromJsonAsync<ShoppingListResult>("api/shopping-list");
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not load shopping list: {ex.Message}";
+        }
+    }
+
+    private sealed record ShoppingListResult(List<StoreShoppingList> Stores, int HiddenGroceryItems);
+
+    private sealed record StoreShoppingList(
+        string Store, decimal TotalSaving, List<StoreGroceryItem> Groceries, List<StoreWine> Wines);
+
+    private sealed record StoreGroceryItem(
+        string Item, decimal BestPrice, decimal Saving, decimal PricePaid, string StorePaid, string LastSeen);
+
+    private sealed record StoreWine(string Grape, string Wine, string Price, string Tier);
+}

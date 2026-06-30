@@ -39,5 +39,9 @@ public sealed class AnalysisJob
     public string? ReceiptDate { get; set; }
     public int ItemCount { get; set; }
 
+    // Durable archive copy of the uploaded receipt image (relative to the output dir), kept after the
+    // working image is pruned so receipts can be browsed/reprocessed later. Null if archiving failed.
+    public string? ReceiptImagePath { get; set; }
+
     public bool IsTerminal => Status is JobStatus.Completed or JobStatus.Failed;
 }

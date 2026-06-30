@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @implements IDisposable
+@inject AuthService Auth
 @inject NavigationManager Nav
 
 <div class="app-shell">
@@ -9,42 +10,57 @@
                 <span class="app-bar__logo" aria-hidden="true">🧾</span>
                 <span class="app-bar__title">Receipt Analyzer</span>
             </a>
-            @if (_onHistory)
+            @if (_authed)
             {
-                <a class="app-bar__nav" href="">Upload</a>
-            }
-            else
-            {
-                <a class="app-bar__nav" href="history">History</a>
+                <nav class="app-bar__links">
+                    <a class="app-bar__nav" href="">Upload</a>
+                    <a class="app-bar__nav" href="stores">Stores</a>
+                    <a class="app-bar__nav" href="staples">Staples</a>
+                    <a class="app-bar__nav" href="spend">Spend</a>
+                    <a class="app-bar__nav" href="history">History</a>
+                    <a class="app-bar__nav" href="costs">Costs</a>
+                    <a class="app-bar__nav" href="#" @onclick="Logout" @onclick:preventDefault="true">Logout</a>
+                </nav>
             }
         </div>
     </header>
 
     <main class="app-main">
         <div class="app-container">
-            @Body
+            @if (OnLogin || _authed)
+            {
+                @Body
+            }
+            else
+            {
+                <div class="text-muted p-4"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</div>
+            }
         </div>
     </main>
 </div>
 
 @code {
-    private bool _onHistory;
+    private bool _authed;
 
-    protected override void OnInitialized()
-    {
-        UpdateLocation();
-        Nav.LocationChanged += OnLocationChanged;
-    }
+    private bool OnLogin =>
+        Nav.ToBaseRelativePath(Nav.Uri).TrimStart('/').StartsWith("login", StringComparison.OrdinalIgnoreCase);
 
-    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    protected override void OnInitialized() => Nav.LocationChanged += OnLocationChanged;
+
+    protected override async Task OnInitializedAsync()
     {
-        UpdateLocation();
+        _authed = await Auth.IsAuthenticatedAsync();
+        if (!_authed && !OnLogin) Nav.NavigateTo("login");
         StateHasChanged();
     }
 
-    private void UpdateLocation() =>
-        _onHistory = Nav.ToBaseRelativePath(Nav.Uri).TrimStart('/')
-            .StartsWith("history", StringComparison.OrdinalIgnoreCase);
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e) => StateHasChanged();
+
+    private async Task Logout()
+    {
+        await Auth.LogoutAsync();
+        Nav.NavigateTo("login", forceLoad: true);
+    }
 
     public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
 }

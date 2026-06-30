@@ -202,21 +202,22 @@ a {
     border: 1px solid var(--line);
     padding: .45rem .55rem;
     vertical-align: top;
-    word-break: break-word;
-    overflow-wrap: anywhere;
+    word-break: normal;
+    overflow-wrap: break-word; /* wrap at spaces; only break a word if it's too long to fit */
 }
 
 .md tbody tr:nth-child(even) td {
     background: #fafbfa;
 }
 
-/* Give the item-name column the lion's share; keep the short numeric columns snug */
+/* Give the item-name column the lion's share; let every column wrap so nothing is clipped
+   off the right edge on a phone. Auto layout then shrinks empty columns (e.g. the 🇺🇸 flag). */
 .md td:first-child, .md th:first-child {
     width: 42%;
 }
 
 .md td:not(:first-child), .md th:not(:first-child) {
-    white-space: nowrap;
+    white-space: normal;
 }
 
 pre {

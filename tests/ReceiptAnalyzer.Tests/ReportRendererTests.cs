@@ -61,4 +61,30 @@ public class ReportRendererTests
         Assert.Contains("**Receipt math:** ✅", Report);
         Assert.Contains("matching the printed subtotal", Report);
     }
+
+    [Fact]
+    public void Reconciling_receipt_has_no_reshoot_guidance()
+    {
+        Assert.DoesNotContain("This read looks unreliable", Report);
+    }
+
+    [Fact]
+    public void Large_unreconciled_mismatch_warns_to_reshoot()
+    {
+        // One £5 item but a printed subtotal of £50 — a gap big enough to mean a bad photo.
+        var ext = new ReceiptAnalyzer.Agent.ReceiptExtraction(
+            "Sainsbury's", new DateOnly(2026, 6, 21),
+            new[] { new ReceiptAnalyzer.Agent.RawItem("Mystery", 1m, 5.00m, 5.00m) },
+            PrintedSubtotal: 50.00m, PrintedTotal: 50.00m, Savings: 0m,
+            IsReceipt: true, Confidence: 0.5, Notes: null);
+        var result = new ReceiptAnalyzer.Agent.AnalysisResult(
+            ext,
+            new ReceiptAnalyzer.Agent.ItemClassifications(new List<ReceiptAnalyzer.Agent.ItemClassification>()),
+            null, null, new DateTimeOffset(2026, 6, 21, 9, 0, 0, TimeSpan.Zero));
+
+        var report = ReportRenderer.Render(result);
+        Assert.Contains("**Receipt math:** ⚠️", report);
+        Assert.Contains("This read looks unreliable", report);
+        Assert.Contains("one receipt at a time", report);
+    }
 }

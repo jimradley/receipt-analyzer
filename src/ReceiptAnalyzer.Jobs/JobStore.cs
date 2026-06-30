@@ -12,6 +12,7 @@ namespace ReceiptAnalyzer.Jobs;
 public sealed class JobStore
 {
     private readonly string _jobsDir;
+    private readonly object _gate = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -47,9 +48,12 @@ public sealed class JobStore
 
     public AnalysisJob? Get(string id)
     {
+        lock (_gate)
+        {
         var path = JobPath(id);
         if (!File.Exists(path)) return null;
         return JsonSerializer.Deserialize<AnalysisJob>(File.ReadAllText(path), JsonOptions);
+        }
     }
 
     public byte[]? GetImage(string id)
@@ -87,12 +91,14 @@ public sealed class JobStore
 
     public void Save(AnalysisJob job)
     {
+        lock (_gate)
+        {
         job.UpdatedAt = DateTimeOffset.UtcNow;
         var path = JobPath(job.Id);
-        var tmp = path + ".tmp";
+        var tmp = path + $".{Guid.NewGuid():N}.tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(job, JsonOptions));
-        if (File.Exists(path)) File.Delete(path);
-        File.Move(tmp, path);
+        File.Move(tmp, path, true);
+        }
     }
 
     /// <summary>Non-terminal jobs (Queued/Running) — re-enqueued on startup so they resume.</summary>

@@ -12,6 +12,7 @@ public sealed class LedgerStore
     private readonly string _buyElsewherePath;
     private readonly string _alternativesPath;
     private readonly ILogger<LedgerStore> _logger;
+    private readonly object _gate = new();
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -28,14 +29,17 @@ public sealed class LedgerStore
 
     public LedgerData Load()
     {
+        lock (_gate)
+        {
         if (File.Exists(_ledgerPath))
         {
             var json = File.ReadAllText(_ledgerPath);
-            return JsonSerializer.Deserialize<LedgerData>(json, JsonOptions) ?? new LedgerData();
+            return Deduplicate(JsonSerializer.Deserialize<LedgerData>(json, JsonOptions) ?? new LedgerData());
         }
 
         _logger.LogInformation("ledger.json not found — migrating from existing markdown files.");
         return Migrate();
+        }
     }
 
     public LedgerMergeResult Merge(LedgerData ledger, AnalysisResult result, string today)
@@ -48,7 +52,7 @@ public sealed class LedgerStore
             if (!classification.IsAmerican && classification.NovaLevel is not (3 or 4)) continue;
 
             var rawItem = result.Extraction.Items[classification.Index];
-            var key = KeyNormaliser.Normalise(rawItem.Name);
+            var key = KeyNormaliser.Product(rawItem.Name, classification.CanonicalName);
 
             var idx = ledger.Alternatives.FindIndex(a => a.Key == key);
             if (idx >= 0)
@@ -68,7 +72,7 @@ public sealed class LedgerStore
         {
             foreach (var pc in result.PriceChecks.Items.Where(p => p.BestPrice.HasValue && p.Saving >= 0.30m))
             {
-                var key = KeyNormaliser.Normalise(pc.Name);
+                var key = KeyNormaliser.Product(pc.Name);
                 var idx = ledger.BuyElsewhere.FindIndex(b => b.Key == key);
                 if (idx >= 0)
                 {
@@ -79,7 +83,9 @@ public sealed class LedgerStore
                         PricePaid = pc.PricePaid,
                         BestPrice = pc.BestPrice!.Value < existing.BestPrice ? pc.BestPrice.Value : existing.BestPrice,
                         Where = pc.BestPrice!.Value < existing.BestPrice ? (pc.BestPriceStore ?? existing.Where) : existing.Where,
-                        Saving = pc.BestPrice!.Value < existing.BestPrice ? pc.Saving!.Value : existing.Saving
+                        Saving = pc.PricePaid - Math.Min(existing.BestPrice, pc.BestPrice.Value),
+                        LatestBestPrice = pc.BestPrice,
+                        LatestBestPriceStore = pc.BestPriceStore
                     };
                     ledger.BuyElsewhere[idx] = updated_;
                     updated++;
@@ -94,7 +100,9 @@ public sealed class LedgerStore
                         pc.BestPrice!.Value,
                         pc.BestPriceStore ?? "Unknown",
                         pc.Saving!.Value,
-                        today));
+                        today,
+                        pc.BestPrice,
+                        pc.BestPriceStore));
                     added.Add(pc.Name);
                 }
             }
@@ -106,11 +114,13 @@ public sealed class LedgerStore
 
     public void Save(LedgerData ledger)
     {
+        lock (_gate)
+        {
         Directory.CreateDirectory(Path.GetDirectoryName(_ledgerPath)!);
-        var tmp = _ledgerPath + ".tmp";
+        var tmp = _ledgerPath + $".{Guid.NewGuid():N}.tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(ledger, JsonOptions));
-        if (File.Exists(_ledgerPath)) File.Delete(_ledgerPath);
-        File.Move(tmp, _ledgerPath);
+        File.Move(tmp, _ledgerPath, true);
+        }
     }
 
     public void ReRenderMarkdown(LedgerData ledger)
@@ -153,5 +163,18 @@ public sealed class LedgerStore
         if (c.NovaLevel is 3 or 4)
             parts.Add($"NOVA {c.NovaLevel}");
         return string.Join(" + ", parts);
+    }
+
+    private static LedgerData Deduplicate(LedgerData data)
+    {
+        data.Alternatives = data.Alternatives
+            .GroupBy(x => KeyNormaliser.Product(x.Item), StringComparer.Ordinal)
+            .Select(g => g.OrderByDescending(x => x.LastSeen).First() with { Key = g.Key })
+            .ToList();
+        data.BuyElsewhere = data.BuyElsewhere
+            .GroupBy(x => KeyNormaliser.Product(x.Item), StringComparer.Ordinal)
+            .Select(g => g.OrderByDescending(x => x.LastSeen).First() with { Key = g.Key })
+            .ToList();
+        return data;
     }
 }

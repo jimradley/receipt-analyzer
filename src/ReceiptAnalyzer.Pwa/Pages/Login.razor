@@ -1,0 +1,62 @@
+@page "/login"
+@inject AuthService Auth
+@inject NavigationManager Nav
+
+<PageTitle>Receipt Analyzer — Unlock</PageTitle>
+
+<div class="login">
+    <h1 class="login__title">🧾 Receipt Analyzer</h1>
+    <p class="text-muted">This app is locked. Unlock with your passkey.</p>
+
+    @if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+
+    <button class="btn btn-primary btn-lg w-100 mb-4" @onclick="Unlock" disabled="@_busy">
+        @if (_busy && _action == "login")
+        {
+            <span class="spinner-border spinner-border-sm me-2"></span>
+        }
+        Unlock with passkey
+    </button>
+
+    <details class="login__enrol">
+        <summary>Set up this device</summary>
+        <p class="text-muted mt-2">First time on this device — or recovering a lost one — enter your enroll code, then approve the prompt.</p>
+        <input class="form-control mb-2" type="text" placeholder="Enroll code" @bind="_code"
+               autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        <button class="btn btn-outline-secondary w-100" @onclick="Enrol" disabled="@_busy">
+            @if (_busy && _action == "enrol")
+            {
+                <span class="spinner-border spinner-border-sm me-2"></span>
+            }
+            Enrol this device
+        </button>
+    </details>
+</div>
+
+@code {
+    private bool _busy;
+    private string? _error;
+    private string? _code;
+    private string? _action;
+
+    private async Task Unlock()
+    {
+        _busy = true; _action = "login"; _error = null;
+        var err = await Auth.LoginAsync();
+        _busy = false;
+        if (err is null) Nav.NavigateTo("", forceLoad: true);
+        else _error = err;
+    }
+
+    private async Task Enrol()
+    {
+        _busy = true; _action = "enrol"; _error = null;
+        var err = await Auth.EnrolAsync(_code);
+        _busy = false;
+        if (err is null) Nav.NavigateTo("", forceLoad: true);
+        else _error = err;
+    }
+}
