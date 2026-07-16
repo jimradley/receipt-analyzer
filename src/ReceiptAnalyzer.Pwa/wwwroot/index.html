@@ -33,7 +33,14 @@
         <span class="dismiss">🗙</span>
     </div>
     <script src="_framework/blazor.webassembly.js"></script>
-    <script>navigator.serviceWorker.register('service-worker.js');</script>
+    <script>
+        // The registered script's own bytes rarely change between deploys (only the imported
+        // asset manifest does), so the browser's normal update-check never notices a redeploy and
+        // an already-installed PWA keeps running its old worker/cache indefinitely. Forcing a
+        // fresh URL on every load makes the browser always re-fetch and re-evaluate for updates;
+        // the worker's own skipWaiting()/clients.claim() then takes over immediately when changed.
+        navigator.serviceWorker.register('service-worker.js?v=' + Date.now());
+    </script>
 </body>
 
 </html>

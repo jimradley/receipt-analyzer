@@ -90,6 +90,24 @@ app.UseAuthorization();
 
 app.MapAuthEndpoints();
 
+// The browser's service-worker update check relies on byte-comparing this exact file on every
+// visit; any caching here (CDN, browser HTTP cache, or MapStaticAssets' default max-age) can hide
+// a real redeploy from an already-installed client for hours. Force it to always revalidate.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.Equals("/service-worker.js", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.OnStarting(() =>
+        {
+            context.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            context.Response.Headers.Pragma = "no-cache";
+            context.Response.Headers.Expires = "0";
+            return Task.CompletedTask;
+        });
+    }
+    await next();
+});
+
 app.MapStaticAssets();
 
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", time = DateTimeOffset.UtcNow }));

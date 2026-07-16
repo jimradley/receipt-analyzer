@@ -1,5 +1,12 @@
 // Caution! Be sure you understand the caveats before publishing an application with
 // offline support. See https://aka.ms/blazor-offline-considerations
+//
+// build-stamp: 2026-07-16T22:40Z-nav-fix — this comment MUST change on every deploy that touches
+// client assets. The browser detects a service-worker update only via a byte-for-byte compare of
+// THIS file's own text (never the imported service-worker-assets.js manifest, and never anything
+// served through this worker's own fetch handler, which serves index.html cache-first and so can
+// never observe a fresh deploy on its own). Without a bytes-level change here, every future
+// redeploy is a silent no-op for anyone who already has the app installed. See docs/Learnings.md.
 
 self.importScripts('./service-worker-assets.js');
 self.addEventListener('install', event => event.waitUntil(onInstall(event)));
