@@ -9,7 +9,11 @@ public sealed record ReceiptExtraction(
     decimal? Savings,
     bool IsReceipt,
     double Confidence,
-    string? Notes
+    string? Notes,
+    // The printed "number of items" line, when present. Cross-checked against the sum of item
+    // quantities to catch a vision read that dropped or duplicated rows even when the £ totals
+    // happen to reconcile.
+    int? PrintedItemCount = null
 );
 
 public sealed record RawItem(
@@ -80,7 +84,10 @@ public sealed record PriceCheckItem(
     decimal? Saving,
     string? Notes,
     string? Outcome = null,
-    decimal Quantity = 1
+    decimal Quantity = 1,
+    // The URL the price was sourced from, when the agent provides one. Used by the fabrication
+    // guard: a claimed price with no source at the receipt's own retailer is treated as unresolved.
+    string? SourceUrl = null
 );
 
 public sealed record PriceCheckResult(

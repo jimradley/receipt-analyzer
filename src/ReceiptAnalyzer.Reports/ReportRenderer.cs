@@ -296,7 +296,12 @@ public static class ReportRenderer
     /// rather than a few missed lines or complex multi-save discounts: the items are off by more than
     /// 15% of the printed figure (and at least a couple of pounds, so tiny receipts don't over-trigger).
     /// </summary>
-    private static bool IsLargeMismatch(ReceiptMathCheck math)
+    /// <summary>
+    /// Public so callers outside the renderer (the pipeline's ledger/price-cache suppression guard)
+    /// can reuse the same "is this read too unreliable to trust" threshold as the report's own
+    /// re-shoot warning.
+    /// </summary>
+    public static bool IsLargeMismatch(ReceiptMathCheck math)
     {
         if (math.Delta is not { } delta || math.Reference is not { } reference || reference <= 0) return false;
         var abs = Math.Abs(delta);

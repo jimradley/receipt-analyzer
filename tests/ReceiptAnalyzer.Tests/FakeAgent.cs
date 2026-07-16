@@ -11,6 +11,16 @@ internal sealed class FakeAgent : IAnalysisAgent
     public int SeasonalityCalls;
     public bool IsReceipt = true;
 
+    /// <summary>
+    /// When set, each successive <see cref="ExtractReceiptAsync"/> call returns the next entry
+    /// (clamped to the last once exhausted) instead of the fixed sample — lets re-extraction-loop
+    /// tests script a sequence of improving/non-improving reads.
+    /// </summary>
+    public List<ReceiptExtraction>? ExtractionSequence;
+
+    /// <summary>Every correction hint passed to <see cref="ExtractReceiptAsync"/>, in call order (null on the first call).</summary>
+    public List<string?> ExtractHints = new();
+
     /// <summary>The branded items handed to the most recent price-check call (cache misses only).</summary>
     public IReadOnlyList<BrandedItemForCheck> LastPriceCheckItems = Array.Empty<BrandedItemForCheck>();
 
@@ -35,9 +45,17 @@ internal sealed class FakeAgent : IAnalysisAgent
     public Task<ReceiptExtraction> ExtractReceiptAsync(byte[] imageBytes, string mediaType, CancellationToken ct, string? correctionHint = null)
     {
         ExtractCalls++;
+        ExtractHints.Add(correctionHint);
         UsageReporter.Report(new StageUsage("extract", Model, 1000, 500, 0, 0));
-        var ext = TestData.SampleResult().Extraction with { IsReceipt = IsReceipt };
-        return Task.FromResult(ext);
+
+        if (ExtractionSequence is { Count: > 0 } seq)
+        {
+            var ext = seq[Math.Min(ExtractCalls - 1, seq.Count - 1)];
+            return Task.FromResult(ext with { IsReceipt = IsReceipt });
+        }
+
+        var sample = TestData.SampleResult().Extraction with { IsReceipt = IsReceipt };
+        return Task.FromResult(sample);
     }
 
     public Task<ItemClassifications> ClassifyAsync(IReadOnlyList<RawItem> items, CancellationToken ct)

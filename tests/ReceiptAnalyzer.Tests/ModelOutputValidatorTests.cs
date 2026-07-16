@@ -102,4 +102,95 @@ public class ModelOutputValidatorTests
         Assert.Equal(-0.20m, repaired[1].Saving); // price kept even though it isn't a saving
         Assert.Equal(PriceCheckOutcome.NotFound, repaired[2].Outcome);
     }
+
+    [Fact]
+    public void Price_repair_downgrades_a_same_store_same_price_no_source_result_to_unchecked()
+    {
+        // The "every row £0.00 saving at Morrisons" fabrication failure mode: the model claims a
+        // "best price" identical to what was paid, at the receipt's own retailer, with no source.
+        var requested = new[] { new BrandedItemForCheck(0, "KTC Chick Peas", 0.52m, "Morrisons") };
+        var raw = new PriceCheckResult(
+            [new(0, "KTC Chick Peas", 0.52m, "Morrisons", 0.52m, "Morrisons", null, null)], null);
+
+        var item = Assert.Single(ModelOutputValidator.Repair(requested, raw).Items);
+
+        Assert.Equal(PriceCheckOutcome.Unchecked, item.Outcome);
+        Assert.Null(item.BestPrice);
+        Assert.Null(item.BestPriceStore);
+        Assert.Null(item.Saving);
+    }
+
+    [Fact]
+    public void Price_repair_keeps_a_same_store_same_price_result_when_a_source_url_is_present()
+    {
+        // A real search that genuinely confirms the receipt price is the best is legitimate — the
+        // fabrication guard should only bite when there's no evidence of an actual search.
+        var requested = new[] { new BrandedItemForCheck(0, "KTC Chick Peas", 0.52m, "Morrisons") };
+        var raw = new PriceCheckResult(
+            [new(0, "KTC Chick Peas", 0.52m, "Morrisons", 0.52m, "Morrisons", null, null, SourceUrl: "https://www.morrisons.com/p/123")], null);
+
+        var item = Assert.Single(ModelOutputValidator.Repair(requested, raw).Items);
+
+        Assert.Equal(PriceCheckOutcome.AlreadyBest, item.Outcome);
+        Assert.Equal(0.52m, item.BestPrice);
+    }
+
+    [Fact]
+    public void Price_repair_never_reports_a_tesco_price()
+    {
+        var requested = new[] { new BrandedItemForCheck(0, "Maltesers 100g", 1.50m, "Morrisons") };
+        var raw = new PriceCheckResult(
+            [new(0, "Maltesers 100g", 1.50m, "Morrisons", 1.00m, "Tesco", null, null, SourceUrl: "https://www.tesco.com/x")], null);
+
+        var item = Assert.Single(ModelOutputValidator.Repair(requested, raw).Items);
+
+        Assert.Null(item.BestPrice);
+        Assert.Null(item.BestPriceStore);
+        Assert.Equal(PriceCheckOutcome.NotFound, item.Outcome);
+    }
+
+    [Fact]
+    public void Extraction_repair_clears_an_implausibly_old_receipt_date()
+    {
+        var extraction = new ReceiptExtraction(
+            "Morrisons", new DateOnly(2023, 1, 1), Items, 10m, 10m, null, true, 0.9, null);
+
+        var repaired = ModelOutputValidator.Repair(extraction, today: new DateOnly(2026, 7, 16));
+
+        Assert.Null(repaired.ReceiptDate);
+        Assert.Contains("implausible", repaired.Notes);
+    }
+
+    [Fact]
+    public void Extraction_repair_clears_a_receipt_date_more_than_a_day_in_the_future()
+    {
+        var extraction = new ReceiptExtraction(
+            "Morrisons", new DateOnly(2026, 7, 20), Items, 10m, 10m, null, true, 0.9, null);
+
+        var repaired = ModelOutputValidator.Repair(extraction, today: new DateOnly(2026, 7, 16));
+
+        Assert.Null(repaired.ReceiptDate);
+    }
+
+    [Fact]
+    public void Extraction_repair_keeps_a_plausible_recent_receipt_date()
+    {
+        var extraction = new ReceiptExtraction(
+            "Morrisons", new DateOnly(2026, 6, 20), Items, 10m, 10m, null, true, 0.9, null);
+
+        var repaired = ModelOutputValidator.Repair(extraction, today: new DateOnly(2026, 7, 16));
+
+        Assert.Equal(new DateOnly(2026, 6, 20), repaired.ReceiptDate);
+    }
+
+    [Fact]
+    public void Extraction_repair_keeps_a_date_exactly_one_day_in_the_future()
+    {
+        var extraction = new ReceiptExtraction(
+            "Morrisons", new DateOnly(2026, 7, 17), Items, 10m, 10m, null, true, 0.9, null);
+
+        var repaired = ModelOutputValidator.Repair(extraction, today: new DateOnly(2026, 7, 16));
+
+        Assert.Equal(new DateOnly(2026, 7, 17), repaired.ReceiptDate);
+    }
 }

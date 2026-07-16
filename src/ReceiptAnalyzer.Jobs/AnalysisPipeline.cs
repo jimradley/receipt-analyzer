@@ -95,6 +95,16 @@ public sealed class AnalysisPipeline
             var classByIndex = job.Classifications.Items.ToDictionary(c => c.Index);
             var london = ToLondon(job.CreatedAt);
 
+            // A persistently bad read (garbled items, blended receipts, wrong orientation) must not
+            // poison durable state: the report still renders (with its re-shoot warning) but the
+            // ledger merge and price-cache writes are skipped for this receipt.
+            var finalMath = ReceiptMath.Check(ext);
+            var suppressDurableWrites = finalMath.Reconciles == false && ReportRenderer.IsLargeMismatch(finalMath);
+            if (suppressDurableWrites)
+                _logger.LogWarning(
+                    "Job {Id}: large unreconciled mismatch ({Summary}) — suppressing ledger merge and price-cache writes.",
+                    id, finalMath.Summary);
+
             // 3. Price check (branded, non-own-label items) — served from the price cache where fresh,
             //    so only cache-misses incur a web search.
             if (!job.PriceChecksDone)
@@ -115,7 +125,7 @@ public sealed class AnalysisPipeline
                     .ToList();
 
                 if (branded.Count > 0)
-                    job.PriceChecks = await PriceCheckWithCacheAsync(branded, london, ct);
+                    job.PriceChecks = await PriceCheckWithCacheAsync(branded, london, ct, allowCacheWrites: !suppressDurableWrites);
 
                 job.PriceChecksDone = true;
                 _store.Save(job);
@@ -175,10 +185,13 @@ public sealed class AnalysisPipeline
             persistenceStarted = true;
             await WriteAtomicAsync(fullPath, markdown, ct);
 
-            var ledger = _ledger.Load();
-            _ledger.Merge(ledger, result, london.ToString("yyyy-MM-dd"));
-            _ledger.Save(ledger);
-            _ledger.ReRenderMarkdown(ledger);
+            if (!suppressDurableWrites)
+            {
+                var ledger = _ledger.Load();
+                _ledger.Merge(ledger, result, london.ToString("yyyy-MM-dd"));
+                _ledger.Save(ledger);
+                _ledger.ReRenderMarkdown(ledger);
+            }
 
             // Durable purchase history for replenishment + longitudinal habit flags — keyed by job id so a
             // re-run replaces, not doubles. Classifications carry NOVA / US-ownership forward per item.
@@ -251,7 +264,7 @@ public sealed class AnalysisPipeline
     /// not-found results are written back to the cache (never errors).
     /// </summary>
     private async Task<PriceCheckResult?> PriceCheckWithCacheAsync(
-        IReadOnlyList<BrandedItemForCheck> branded, DateTime london, CancellationToken ct)
+        IReadOnlyList<BrandedItemForCheck> branded, DateTime london, CancellationToken ct, bool allowCacheWrites = true)
     {
         var cache = _priceCache.Load();
         var today = DateOnly.FromDateTime(london.Date);
@@ -302,7 +315,7 @@ public sealed class AnalysisPipeline
             .Select(b => results[b.Index])
             .Where(f => f.Outcome != PriceCheckOutcome.Unchecked)
             .ToList();
-        if (cacheable.Count > 0)
+        if (cacheable.Count > 0 && allowCacheWrites)
         {
             PriceCacheStore.Upsert(cache, cacheable.Select(f => new PriceCacheEntry(
                 KeyNormaliser.PriceKey(f.Name), f.BestPrice, f.BestPriceStore, f.Notes, checkedOn,
@@ -392,46 +405,104 @@ public sealed class AnalysisPipeline
         }
     }
 
+    /// <summary>Max re-extraction attempts when the first read looks wrong (was 1; widened 2026-07-16
+    /// alongside the printed-item-count signal, since a single retry often wasn't enough).</summary>
+    private const int MaxReExtractAttempts = 2;
+
     /// <summary>
-    /// When the first extraction's line items don't reconcile with the receipt's printed total, the
-    /// read may have missed rows or discount/multibuy accounting. Re-asks once with a neutral correction hint and keeps
-    /// whichever read lands closer to the printed figure. Best-effort: a failed retry keeps the first read.
+    /// When a read's line items don't reconcile with the receipt's printed total, OR its count
+    /// doesn't match the receipt's own printed "number of items" line, the vision step likely
+    /// dropped or hallucinated rows. Re-asks up to <see cref="MaxReExtractAttempts"/> times with a
+    /// hint describing both signals, and keeps the best read seen so far: smallest |delta| against
+    /// the printed total, tie-broken in favour of a matching item count. Never hard-fails — a
+    /// persistently bad read just keeps whichever attempt did best (the large-mismatch re-shoot
+    /// warning and durable-write suppression handle the rest downstream).
     /// </summary>
     private async Task<ReceiptExtraction> ReExtractIfItemsMissingAsync(
         ReceiptExtraction first, byte[] image, string mediaType, CancellationToken ct)
     {
-        var check = ReceiptMath.Check(first);
-        if (check.Reconciles != false || check.Reference is not { } reference || check.Delta is not { } delta)
-            return first; // reconciles, or no printed total to reconcile against
+        var best = first;
 
-        var hint =
-            $"Your previous read listed {first.Items.Count} item(s) totalling £{check.SumOfItems:F2}, " +
-            $"but the receipt's {check.ReferenceLabel} is £{reference:F2} (off by £{delta:F2}). " +
-            "The difference may be a missed line, discount, weighted item, or multibuy accounting. " +
-            "Re-read the receipt carefully from top to bottom. Return only printed line items and preserve " +
-            "discount/multibuy lines; do not invent an item merely to force the arithmetic to match.";
-
-        try
+        for (var attempt = 1; attempt <= MaxReExtractAttempts; attempt++)
         {
-            var retry = ModelOutputValidator.Repair(
-                await _agent.ExtractReceiptAsync(image, mediaType, ct, hint));
-            if (!retry.IsReceipt) return first;
+            if (!TryBuildRetryHint(best, out var hint))
+                break; // reconciles and (if printed) the item count matches — nothing to chase
 
-            var retryDelta = ReceiptMath.Check(retry).Delta is { } d ? Math.Abs(d) : decimal.MaxValue;
-            if (retryDelta < Math.Abs(delta))
+            try
             {
-                _logger.LogInformation(
-                    "Re-extraction improved reconciliation: {OldItems}→{NewItems} items, |delta| £{OldDelta}→£{NewDelta}.",
-                    first.Items.Count, retry.Items.Count, Math.Abs(delta), retryDelta);
-                return retry;
+                var retry = ModelOutputValidator.Repair(
+                    await _agent.ExtractReceiptAsync(image, mediaType, ct, hint));
+                if (!retry.IsReceipt) break;
+
+                if (IsBetterRead(retry, best))
+                {
+                    _logger.LogInformation(
+                        "Re-extraction attempt {Attempt} improved the read: {OldItems}→{NewItems} items.",
+                        attempt, best.Items.Count, retry.Items.Count);
+                    best = retry;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Re-extraction attempt {Attempt} failed; keeping the current best read.", attempt);
             }
         }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Re-extraction attempt failed; keeping the first read.");
-        }
-        return first;
+
+        return best;
     }
+
+    /// <summary>
+    /// True when <paramref name="ext"/> still has a reconciliation or item-count problem worth
+    /// another attempt; <paramref name="hint"/> describes both signals found so the retry knows
+    /// exactly what to look for.
+    /// </summary>
+    private static bool TryBuildRetryHint(ReceiptExtraction ext, out string hint)
+    {
+        var check = ReceiptMath.Check(ext);
+        var mathMismatch = check.Reconciles == false;
+        var summedQuantity = (int)Math.Round(ext.Items.Sum(i => i.Quantity));
+        var countMismatch = ext.PrintedItemCount is { } printed && printed != summedQuantity;
+
+        if (!mathMismatch && !countMismatch)
+        {
+            hint = "";
+            return false;
+        }
+
+        var parts = new List<string>();
+        if (mathMismatch && check.Reference is { } reference && check.Delta is { } delta)
+            parts.Add(
+                $"Your previous read listed {ext.Items.Count} item(s) totalling £{check.SumOfItems:F2}, " +
+                $"but the receipt's {check.ReferenceLabel} is £{reference:F2} (off by £{delta:F2}).");
+        if (countMismatch)
+            parts.Add(
+                $"The receipt prints a \"number of items\" line of {ext.PrintedItemCount}, but your read's " +
+                $"quantities sum to {summedQuantity}. Make sure every printed line is captured, including multi-buys.");
+        parts.Add(
+            "The difference may be a missed line, discount, weighted item, or multibuy accounting. Re-read the " +
+            "receipt carefully from top to bottom. Return only printed line items and preserve discount/multibuy " +
+            "lines; do not invent an item merely to force the arithmetic to match.");
+
+        hint = string.Join(" ", parts);
+        return true;
+    }
+
+    /// <summary>Smallest |delta| against the printed total wins; ties prefer a matching item count.</summary>
+    private static bool IsBetterRead(ReceiptExtraction candidate, ReceiptExtraction current)
+    {
+        var candidateDelta = AbsDelta(candidate);
+        var currentDelta = AbsDelta(current);
+        if (candidateDelta != currentDelta)
+            return candidateDelta < currentDelta;
+
+        return CountMatches(candidate) && !CountMatches(current);
+    }
+
+    private static decimal AbsDelta(ReceiptExtraction ext) =>
+        ReceiptMath.Check(ext).Delta is { } d ? Math.Abs(d) : decimal.MaxValue;
+
+    private static bool CountMatches(ReceiptExtraction ext) =>
+        ext.PrintedItemCount is not { } printed || printed == (int)Math.Round(ext.Items.Sum(i => i.Quantity));
 
     /// <summary>
     /// Writes a durable copy of the receipt image into <c>{outputDir}/Receipts</c>, named by date +

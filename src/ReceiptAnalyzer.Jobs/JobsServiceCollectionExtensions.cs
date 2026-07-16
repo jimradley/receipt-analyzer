@@ -43,6 +43,9 @@ public static class JobsServiceCollectionExtensions
                 CacheReadPerMTok: 1.25m, CacheWritePerMTok: 0m),
             ["gpt-5-mini"] = new(InputPerMTok: 0.25m, OutputPerMTok: 2.00m,
                 CacheReadPerMTok: 0.025m, CacheWritePerMTok: 0m),
+            // Headless Claude Code via the bridge rides a Max subscription — zero marginal API cost.
+            ["claude-sonnet-5"] = new(InputPerMTok: 0m, OutputPerMTok: 0m,
+                CacheReadPerMTok: 0m, CacheWritePerMTok: 0m),
         };
 
         var modelsSection = configuration.GetSection("Pricing:Models");

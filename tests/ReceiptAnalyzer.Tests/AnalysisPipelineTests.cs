@@ -355,4 +355,61 @@ public class AnalysisPipelineTests : IDisposable
         // 5 calls × (1000 in × $1 + 500 out × $2) / 1e6 = $0.01 USD; × 0.80 = £0.008
         Assert.Equal(0.008m, done.EstimatedCostGbp);
     }
+
+    [Fact]
+    public async Task Item_count_mismatch_triggers_a_re_extraction_even_when_totals_reconcile()
+    {
+        // Totals reconcile on the first read, but the printed item count (5) doesn't match the
+        // summed quantities (3) — that alone must trigger a retry.
+        var itemsA = new List<RawItem> { new("Item A", 3m, 1m, 3m) };
+        var extA = new ReceiptExtraction("Morrisons", new DateOnly(2026, 7, 16), itemsA, 3m, 3m, null, true, 0.9, null, PrintedItemCount: 5);
+        var itemsB = new List<RawItem> { new("Item A", 5m, 1m, 5m) };
+        var extB = new ReceiptExtraction("Morrisons", new DateOnly(2026, 7, 16), itemsB, 5m, 5m, null, true, 0.9, null, PrintedItemCount: 5);
+        _agent.ExtractionSequence = new List<ReceiptExtraction> { extA, extB };
+
+        var (job, _) = _store.GetOrCreate(Img("count-mismatch"), "image/jpeg");
+        await NewPipeline().ProcessAsync(job.Id, CancellationToken.None);
+
+        Assert.Equal(2, _agent.ExtractCalls);
+        Assert.Null(_agent.ExtractHints[0]);
+        Assert.Contains("number of items", _agent.ExtractHints[1], StringComparison.OrdinalIgnoreCase);
+
+        var done = _store.Get(job.Id)!;
+        Assert.Equal(JobStatus.Completed, done.Status);
+        Assert.Equal(5, done.Extraction!.Items.Sum(i => i.Quantity)); // kept the read whose count matches
+    }
+
+    [Fact]
+    public async Task A_persistent_mismatch_stops_after_the_retry_cap_and_never_hard_fails()
+    {
+        var items = new List<RawItem> { new("Item A", 3m, 1m, 3m) };
+        var ext = new ReceiptExtraction("Morrisons", new DateOnly(2026, 7, 16), items, 3m, 3m, null, true, 0.9, null, PrintedItemCount: 5);
+        _agent.ExtractionSequence = new List<ReceiptExtraction> { ext, ext, ext };
+
+        var (job, _) = _store.GetOrCreate(Img("persistent-mismatch"), "image/jpeg");
+        await NewPipeline().ProcessAsync(job.Id, CancellationToken.None);
+
+        Assert.Equal(3, _agent.ExtractCalls); // 1 initial + capped at 2 retries
+        Assert.Equal(JobStatus.Completed, _store.Get(job.Id)!.Status);
+    }
+
+    [Fact]
+    public async Task Large_unreconciled_mismatch_suppresses_ledger_and_price_cache_writes()
+    {
+        // Items sum to £4.69 but the printed subtotal claims £40 — a mismatch far beyond a missed
+        // line or discount, per ReportRenderer.IsLargeMismatch. Garbage like this must not poison
+        // the buy-elsewhere ledger or the price cache, even though the report still renders.
+        var badExtraction = TestData.SampleResult().Extraction with { PrintedSubtotal = 40.00m, PrintedTotal = 40.00m, Savings = null };
+        _agent.ExtractionSequence = new List<ReceiptExtraction> { badExtraction, badExtraction, badExtraction };
+
+        var (job, _) = _store.GetOrCreate(Img("large-mismatch"), "image/jpeg");
+        await NewPipeline().ProcessAsync(job.Id, CancellationToken.None);
+
+        var done = _store.Get(job.Id)!;
+        Assert.Equal(JobStatus.Completed, done.Status); // still completes — never hard-fails
+        Assert.Contains("re-shoot", done.Markdown, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(Path.Combine(_dir, ReceiptAnalyzer.Reports.ReportLibrary.BuyElsewhereFile)));
+        Assert.True(_agent.PriceCheckCalls > 0); // price-check still runs for the report...
+        Assert.Empty(new PriceCacheStore(_dir).Load().Entries); // ...but nothing is written to the durable cache
+    }
 }

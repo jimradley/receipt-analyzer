@@ -16,7 +16,7 @@ var builder = WebApplication.CreateBuilder(args);
 var outputDir = builder.Configuration["Reports:OutputDir"] ?? @"C:\AI\Projects\Shopping";
 var wineDir = builder.Configuration["Wine:Directory"] ?? @"C:\AI\Projects\Wine";
 
-builder.Services.AddAnalysisAgent(builder.Configuration);
+builder.Services.AddAnalysisAgent(builder.Configuration, outputDir);
 builder.Services.AddSingleton(_ => new WineCatalog(wineDir));
 builder.Services.AddSingleton<LedgerStore>(sp =>
     new LedgerStore(outputDir, sp.GetRequiredService<ILogger<LedgerStore>>()));

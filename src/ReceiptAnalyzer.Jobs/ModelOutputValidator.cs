@@ -1,11 +1,16 @@
 using ReceiptAnalyzer.Agent;
+using ReceiptAnalyzer.Ledger;
 
 namespace ReceiptAnalyzer.Jobs;
 
 /// <summary>Repairs untrusted model output before it can be cached or persisted.</summary>
 public static class ModelOutputValidator
 {
-    public static ReceiptExtraction Repair(ReceiptExtraction value)
+    /// <param name="today">
+    /// Overridable for tests; defaults to the current UTC date. Used only for the receipt-date
+    /// sanity check below.
+    /// </param>
+    public static ReceiptExtraction Repair(ReceiptExtraction value, DateOnly? today = null)
     {
         var items = value.Items
             .Where(i => !string.IsNullOrWhiteSpace(i.Name))
@@ -18,14 +23,34 @@ public static class ModelOutputValidator
             })
             .ToList();
 
+        // Date sanity: a receipt date outside a plausible window (today's OCR read a garbled "2023"
+        // from a 2026 receipt) is worse than no date at all — null it and let the renderer fall back
+        // to the upload date, with a note explaining why.
+        var receiptDate = value.ReceiptDate;
+        var notes = value.Notes;
+        if (receiptDate is { } rd)
+        {
+            var todayDate = today ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var earliestAllowed = todayDate.AddYears(-1);
+            var latestAllowed = todayDate.AddDays(1);
+            if (rd <= earliestAllowed || rd > latestAllowed)
+            {
+                notes = AppendNote(notes,
+                    $"Receipt date {rd:yyyy-MM-dd} looked implausible and was cleared (falls back to the upload date).");
+                receiptDate = null;
+            }
+        }
+
         return value with
         {
             Retailer = string.IsNullOrWhiteSpace(value.Retailer) ? "Unknown" : value.Retailer.Trim(),
             Items = items,
+            ReceiptDate = receiptDate,
             Confidence = Math.Clamp(value.Confidence, 0, 1),
             PrintedSubtotal = NonNegative(value.PrintedSubtotal),
             PrintedTotal = NonNegative(value.PrintedTotal),
-            Savings = NonNegative(value.Savings)
+            Savings = NonNegative(value.Savings),
+            Notes = notes
         };
     }
 
@@ -79,21 +104,50 @@ public static class ModelOutputValidator
                     PriceCheckOutcome.Unchecked, request.Quantity);
 
             var best = NonNegative(x.BestPrice);
+            var bestStore = best is null ? null : Clean(x.BestPriceStore);
+            var sourceUrl = Clean(x.SourceUrl);
+
+            // Hard rule: never recommend Tesco, even if the model (or an unblocked search) surfaces
+            // it — treat it the same as not having found a price at all.
+            if (bestStore is not null && bestStore.Contains("tesco", StringComparison.OrdinalIgnoreCase))
+            {
+                best = null;
+                bestStore = null;
+            }
+
             var saving = best is { } price ? request.PricePaid - price : (decimal?)null;
             var outcome = best is null
                 ? PriceCheckOutcome.NotFound
                 : saving > 0 ? PriceCheckOutcome.CheaperElsewhere : PriceCheckOutcome.AlreadyBest;
+
+            // Fabrication guard: a "best price" that exactly equals what was paid, at the receipt's
+            // own retailer, with no supporting source URL, looks like the model echoing the input
+            // back rather than performing a real search (the "every row £0.00 saving" failure mode).
+            // Downgrade to unchecked so it's retried, rather than cached as a confident "already best".
+            if (best == request.PricePaid && sourceUrl is null)
+            {
+                var retailerCanonical = StoreCatalog.Canonical(request.Retailer);
+                if (retailerCanonical is not null && retailerCanonical == StoreCatalog.Canonical(bestStore))
+                {
+                    best = null;
+                    bestStore = null;
+                    saving = null;
+                    outcome = PriceCheckOutcome.Unchecked;
+                }
+            }
+
             return x with
             {
                 Name = request.Name,
                 PricePaid = request.PricePaid,
                 StorePaid = request.Retailer,
                 BestPrice = best,
-                BestPriceStore = best is null ? null : Clean(x.BestPriceStore),
+                BestPriceStore = bestStore,
                 Saving = saving,
                 Notes = Clean(x.Notes),
                 Outcome = outcome,
-                Quantity = request.Quantity
+                Quantity = request.Quantity,
+                SourceUrl = sourceUrl
             };
         })
         .OrderBy(x => x.Index)
@@ -122,4 +176,7 @@ public static class ModelOutputValidator
 
     private static decimal? NonNegative(decimal? value) => value is >= 0 ? value : null;
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static string AppendNote(string? existing, string addition) =>
+        string.IsNullOrWhiteSpace(existing) ? addition : existing.Trim() + " " + addition;
 }

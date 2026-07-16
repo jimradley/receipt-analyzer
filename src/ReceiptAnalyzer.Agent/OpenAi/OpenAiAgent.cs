@@ -61,7 +61,7 @@ public sealed class OpenAiAgent : IAnalysisAgent
                 new JsonObject { ["type"] = "text", ["text"] = promptText }
             });
 
-        var json = await CallAsync(messages, "extract", ct);
+        var json = await CallAsync(messages, "extract", ct, JsonNode.Parse(ExtractionJsonSchema));
         return JsonSerializer.Deserialize<ReceiptExtraction>(json, JsonOptions)
             ?? throw new InvalidOperationException("Vision response could not be parsed as ReceiptExtraction.");
     }
@@ -105,7 +105,7 @@ public sealed class OpenAiAgent : IAnalysisAgent
 
         var messages = BuildMessages(ClassificationSystemPrompt, userText);
 
-        var json = await CallAsync(messages, "classify", ct);
+        var json = await CallAsync(messages, "classify", ct, JsonNode.Parse(ClassificationJsonSchema));
         return JsonSerializer.Deserialize<ItemClassifications>(json, JsonOptions)
             ?? throw new InvalidOperationException("Classification response could not be parsed.");
     }
@@ -123,15 +123,31 @@ public sealed class OpenAiAgent : IAnalysisAgent
         };
     }
 
-    private async Task<string> CallAsync(JsonArray messages, string stage, CancellationToken ct)
+    private async Task<string> CallAsync(JsonArray messages, string stage, CancellationToken ct, JsonNode? responseSchema = null)
     {
         var body = new JsonObject
         {
             ["model"] = _options.Model,
             ["max_tokens"] = 4096,
-            ["response_format"] = new JsonObject { ["type"] = "json_object" },
+            ["response_format"] = responseSchema is not null
+                ? new JsonObject
+                {
+                    ["type"] = "json_schema",
+                    ["json_schema"] = new JsonObject
+                    {
+                        ["name"] = "response",
+                        ["strict"] = true,
+                        ["schema"] = responseSchema
+                    }
+                }
+                : new JsonObject { ["type"] = "json_object" },
             ["messages"] = messages
         };
+
+        // gpt-5-family models reject an explicit temperature (only the default is accepted);
+        // everything else gets pinned to 0 for deterministic, non-creative extraction/classification.
+        if (!_options.Model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase))
+            body["temperature"] = 0;
 
         using var req = new HttpRequestMessage(HttpMethod.Post, ChatUrl)
         {
@@ -245,14 +261,16 @@ Output ONLY valid JSON. No commentary.
                   "found": true,
                   "bestPrice": 6.75,
                   "bestPriceStore": "Sainsbury's",
+                  "sourceUrl": "https://www.trolley.co.uk/product/example/12345",
                   "notes": "250g pack, matches size bought"
                 }
               ],
               "skippedSummary": null
             }
             Field rules:
-            - found=true with bestPrice + bestPriceStore: the LOWEST current price you found at the allowed stores,
+            - found=true with bestPrice + bestPriceStore + sourceUrl: the LOWEST current price you found at the allowed stores,
               EVEN IF it is not cheaper than pricePaid. Never omit a price just because it isn't a saving.
+            - sourceUrl is REQUIRED whenever found=true — the exact page you found the price on (trolley.co.uk or the supermarket's own site). Never report a price without a source.
             - found=false (bestPrice null) ONLY after genuinely searching and failing to establish a price,
               or when the item is an unbranded loose commodity / own-label with no cross-retailer equivalent.
             - Compare like-for-like pack sizes; if you can only price a different size, still report it and say so in notes.
@@ -324,7 +342,8 @@ Output ONLY valid JSON. No commentary.
                 Saving: null, // recomputed by the validator
                 r.Notes,
                 Outcome: notFound ? PriceCheckOutcome.NotFound : null,
-                Quantity: source?.Quantity ?? 1);
+                Quantity: source?.Quantity ?? 1,
+                SourceUrl: r.SourceUrl);
         }).ToList();
 
         return new PriceCheckResult(resultItems, parsed.SkippedSummary);
@@ -356,7 +375,8 @@ Output ONLY valid JSON. No commentary.
         bool? Found,
         decimal? BestPrice,
         string? BestPriceStore,
-        string? Notes
+        string? Notes,
+        string? SourceUrl
     );
 
     private sealed record PriceCheckRaw(
@@ -389,6 +409,7 @@ Extract this receipt to JSON of shape:
   "printedSubtotal": number | null,
   "printedTotal": number | null,
   "savings": number | null,                    // discounts/loyalty if shown
+  "printedItemCount": int | null,               // the receipt's own printed "Number of items" line, if present
   "isReceipt": bool,
   "confidence": number,                        // 0..1
   "notes": string | null                       // anything unusual (illegible lines, multi-pack ambiguity)
@@ -401,9 +422,79 @@ Reading rules:
 - If the image is rotated or sideways, read it in its correct orientation.
 - Transcribe EVERY line item, top to bottom — do not skip faint, partially-cut, or multi-buy lines.
 - Items only: do NOT include loyalty/points-summary lines (e.g. Nectar/More points), card/payment, change, or the savings line as items.
-- If the receipt prints a "number of items" / item count, make your list match it.
+- If the receipt prints a "number of items" / item count line, capture it verbatim in "printedItemCount" AND make your item list match it.
 - Set "confidence" below 0.5 and explain in "notes" when the photo is blurry, creased, cropped, rotated, or otherwise hard to read.
 """;
+
+    // Strict json_schema for the extract stage (OpenAI structured outputs): every property must be
+    // listed in "required" — optional fields are simulated with a nullable type instead of omission.
+    private const string ExtractionJsonSchema = """
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "retailer": { "type": "string" },
+        "receiptDate": { "type": ["string", "null"] },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "quantity": { "type": "number" },
+              "unitPrice": { "type": "number" },
+              "lineTotal": { "type": "number" }
+            },
+            "required": ["name", "quantity", "unitPrice", "lineTotal"]
+          }
+        },
+        "printedSubtotal": { "type": ["number", "null"] },
+        "printedTotal": { "type": ["number", "null"] },
+        "savings": { "type": ["number", "null"] },
+        "printedItemCount": { "type": ["integer", "null"] },
+        "isReceipt": { "type": "boolean" },
+        "confidence": { "type": "number" },
+        "notes": { "type": ["string", "null"] }
+      },
+      "required": [
+        "retailer", "receiptDate", "items", "printedSubtotal", "printedTotal", "savings",
+        "printedItemCount", "isReceipt", "confidence", "notes"
+      ]
+    }
+    """;
+
+    private const string ClassificationJsonSchema = """
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "index": { "type": "integer" },
+              "canonicalName": { "type": ["string", "null"] },
+              "novaLevel": { "type": ["integer", "null"] },
+              "isAmerican": { "type": "boolean" },
+              "parentCompany": { "type": ["string", "null"] },
+              "parentCountry": { "type": ["string", "null"] },
+              "isOwnLabel": { "type": "boolean" },
+              "swapSuggestion": { "type": ["string", "null"] },
+              "notes": { "type": ["string", "null"] }
+            },
+            "required": [
+              "index", "canonicalName", "novaLevel", "isAmerican", "parentCompany",
+              "parentCountry", "isOwnLabel", "swapSuggestion", "notes"
+            ]
+          }
+        }
+      },
+      "required": ["items"]
+    }
+    """;
 
     private const string ClassificationSystemPrompt = """
 You classify UK supermarket items by NOVA processing level and brand ownership.
@@ -432,7 +523,7 @@ You are a UK supermarket price comparison assistant.
 The item names provided have already been expanded to real product names — search the current price for each at major UK supermarkets: Sainsbury's, Asda, Morrisons, Waitrose, Ocado, Aldi, Lidl.
 Do NOT use Tesco — it is not near the user; never include Tesco prices or Tesco Clubcard.
 Include loyalty card prices where available (Sainsbury's Nectar, Morrisons More).
-Use trolley.co.uk as a reference source.
+Use trolley.co.uk as a reference source, and cite the exact page as sourceUrl whenever you report a price.
 Make a genuine effort to find EVERY item before giving up — these are branded products that should be findable; try the brand + product name.
 Report the LOWEST price you find at the allowed stores for every item, even when it is the same as or higher than what was paid — knowing the price paid was already the best is valuable too.
 Only report an item as not found after genuinely searching for it, or when it is truly an unbranded loose commodity (e.g. loose fruit/veg) or supermarket own-label with no cross-retailer equivalent. Do NOT give up on a recognisable brand just because the first search is unclear.
