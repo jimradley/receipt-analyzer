@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.Options;
 using ReceiptAnalyzer.Bridge;
 
@@ -28,26 +30,27 @@ app.MapPost("/agent/run", async (
         return Results.Problem("Bridge is not configured (RECEIPT_BRIDGE_KEY unset).", statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 
-    if (!ctx.Request.Headers.TryGetValue("X-BRIDGE-KEY", out var provided) || provided != expectedKey)
+    if (!ctx.Request.Headers.TryGetValue("X-BRIDGE-KEY", out var provided) || !FixedTimeEquals(provided.ToString(), expectedKey))
         return Results.Unauthorized();
 
     if (string.IsNullOrWhiteSpace(req.Prompt))
         return Results.BadRequest(new { error = "prompt is required." });
 
     var prompt = req.Prompt;
-    var allowedTools = req.AllowedTools is { Count: > 0 }
-        ? string.Join(",", req.AllowedTools)
-        : options.DefaultAllowedTools;
-
-    if (!string.IsNullOrWhiteSpace(req.ImagePath))
+    var hasImage = !string.IsNullOrWhiteSpace(req.ImagePath);
+    if (hasImage)
     {
-        var hostImagePath = PathMapper.Map(req.ImagePath, options.PathMap);
+        var hostImagePath = PathMapper.Map(req.ImagePath!, options.PathMap);
         prompt = $"Read the receipt image at {hostImagePath} first.\n\n" + prompt;
-        var tools = allowedTools.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
-        if (!tools.Contains("Read", StringComparer.OrdinalIgnoreCase))
-            tools.Add("Read");
-        allowedTools = string.Join(",", tools);
     }
+
+    // Never honour a caller-supplied tool list against a host CLI — intersect it with the server
+    // allowlist so the bridge can't be coerced into running Bash/Write/Edit on the host.
+    var permitted = ToolFilter.Resolve(req.AllowedTools, options, needsRead: hasImage);
+    if (permitted.Count == 0)
+        return Results.BadRequest(new { error = "no permitted tools requested." });
+
+    var allowedTools = string.Join(",", permitted);
 
     var model = string.IsNullOrWhiteSpace(req.Model) ? options.DefaultModel : req.Model;
     var timeoutSeconds = req.TimeoutSeconds is > 0 ? req.TimeoutSeconds.Value : options.DefaultTimeoutSeconds;
@@ -127,6 +130,14 @@ static async Task<string> RunClaudeAsync(
 static void TryKillTree(Process process)
 {
     try { process.Kill(entireProcessTree: true); } catch { /* best effort — process may have already exited */ }
+}
+
+// Constant-time comparison so the shared-secret check doesn't leak the key via response timing.
+static bool FixedTimeEquals(string? a, string? b)
+{
+    if (a is null || b is null) return false;
+    return CryptographicOperations.FixedTimeEquals(
+        Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
 }
 
 /// <summary>Request body for POST /agent/run.</summary>

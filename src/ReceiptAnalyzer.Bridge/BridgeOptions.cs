@@ -26,6 +26,18 @@ public sealed class BridgeOptions
 
     public string DefaultModel { get; set; } = "claude-sonnet-5";
 
-    /// <summary>Comma-separated tool allowlist used when the caller doesn't specify one.</summary>
+    /// <summary>Comma-separated tools requested when the caller doesn't specify any (still filtered
+    /// through <see cref="ToolAllowlist"/>).</summary>
     public string DefaultAllowedTools { get; set; } = "Read,WebSearch";
+
+    /// <summary>
+    /// The ONLY tools the bridge will ever pass to the host `claude` CLI. A caller-supplied tool list
+    /// is intersected against this — the `claude` process runs un-sandboxed on the host, so allowing
+    /// a request to add Bash/Write/Edit would be remote code execution. Read is needed for receipt
+    /// images; WebSearch for price checks. Do not add execution/file-write tools here.
+    /// </summary>
+    public HashSet<string> ToolAllowlist { get; set; } = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Read", "WebSearch",
+    };
 }
