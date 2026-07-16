@@ -28,9 +28,10 @@ public static class PathMapper
             {
                 var rest = normalized.Length > prefix.Length ? normalized[(prefix.Length + 1)..] : "";
                 var hostBase = hostPrefix.TrimEnd('\\', '/');
+                var hostSeparator = hostBase.Contains('\\') ? '\\' : '/';
                 return rest.Length == 0
                     ? hostBase
-                    : Path.Combine(hostBase, rest.Replace('/', Path.DirectorySeparatorChar));
+                    : hostBase + hostSeparator + rest.Replace('/', hostSeparator);
             }
         }
         return path;

@@ -42,4 +42,17 @@ public class PathMapperTests
         var mapped = PathMapper.Map("/data/shoppingx/file.jpg", Map);
         Assert.Equal("/data/shoppingx/file.jpg", mapped);
     }
+
+    [Fact]
+    public void Preserves_posix_separators_for_a_posix_host_path()
+    {
+        var map = new Dictionary<string, string>
+        {
+            ["/data/shopping"] = "/srv/shopping",
+        };
+
+        var mapped = PathMapper.Map("/data/shopping/.state/receipt.jpg", map);
+
+        Assert.Equal("/srv/shopping/.state/receipt.jpg", mapped);
+    }
 }
