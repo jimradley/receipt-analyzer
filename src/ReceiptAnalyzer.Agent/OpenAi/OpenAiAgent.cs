@@ -217,14 +217,16 @@ Output ONLY valid JSON. No commentary.
 
     private sealed record SeasonalityRaw(List<SeasonalityItemRaw> Items);
 
-    private void ReportUsage(string stage, int input, int output)
+    private void ReportUsage(string stage, int input, int output, string? model = null)
     {
         _logger.LogInformation("OpenAI {Stage} usage: input={Input} output={Output}", stage, input, output);
-        UsageReporter.Report(new StageUsage(stage, _options.Model, input, output, 0, 0));
+        UsageReporter.Report(new StageUsage(stage, model ?? _options.Model, input, output, 0, 0));
     }
 
-    public async Task<PriceCheckResult> PriceCheckAsync(IReadOnlyList<BrandedItemForCheck> items, CancellationToken ct)
+    public async Task<PriceCheckResult> PriceCheckAsync(IReadOnlyList<BrandedItemForCheck> items, CancellationToken ct, string? hint = null)
     {
+        var model = _options.PriceCheckModel ?? _options.Model;
+
         var itemsJson = JsonSerializer.Serialize(
             items.Select(i => new { index = i.Index, name = i.Name, pricePaid = i.PricePaid, storePaid = i.Retailer }),
             JsonOptions);
@@ -240,23 +242,36 @@ Output ONLY valid JSON. No commentary.
               "items": [
                 {
                   "index": 0,
+                  "found": true,
                   "bestPrice": 6.75,
                   "bestPriceStore": "Sainsbury's",
-                  "saving": 3.75,
-                  "notes": null
+                  "notes": "250g pack, matches size bought"
                 }
               ],
-              "skippedSummary": "Items not checked: ..."
+              "skippedSummary": null
             }
-            Set bestPrice to null if you cannot find a cheaper price or the item is not suitable for price-checking.
-            Saving = pricePaid - bestPrice (positive = cheaper elsewhere).
-            Include ALL items in the output (even those with bestPrice=null).
+            Field rules:
+            - found=true with bestPrice + bestPriceStore: the LOWEST current price you found at the allowed stores,
+              EVEN IF it is not cheaper than pricePaid. Never omit a price just because it isn't a saving.
+            - found=false (bestPrice null) ONLY after genuinely searching and failing to establish a price,
+              or when the item is an unbranded loose commodity / own-label with no cross-retailer equivalent.
+            - Compare like-for-like pack sizes; if you can only price a different size, still report it and say so in notes.
+            - Include ALL items in the output exactly once, keeping their original index.
             """;
+
+        if (!string.IsNullOrWhiteSpace(hint))
+            prompt += "\n\nIMPORTANT: " + hint;
+
+        // gpt-5-family models use the GA "web_search" tool on the Responses API;
+        // older models (gpt-4o) only support the legacy "web_search_preview" variant.
+        var toolType = model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase)
+            ? "web_search"
+            : "web_search_preview";
 
         var body = new JsonObject
         {
-            ["model"] = _options.Model,
-            ["tools"] = new JsonArray { new JsonObject { ["type"] = "web_search_preview" } },
+            ["model"] = model,
+            ["tools"] = new JsonArray { new JsonObject { ["type"] = toolType } },
             ["input"] = prompt
         };
 
@@ -289,7 +304,7 @@ Output ONLY valid JSON. No commentary.
         _logger.LogInformation("OpenAI price check response length: {Len}", outputText.Length);
 
         var usage = doc["usage"];
-        ReportUsage("price-check", (int?)usage?["input_tokens"] ?? 0, (int?)usage?["output_tokens"] ?? 0);
+        ReportUsage("price-check", (int?)usage?["input_tokens"] ?? 0, (int?)usage?["output_tokens"] ?? 0, model);
 
         var json = ExtractJson(outputText);
         var parsed = JsonSerializer.Deserialize<PriceCheckRaw>(json, JsonOptions)
@@ -298,6 +313,7 @@ Output ONLY valid JSON. No commentary.
         var resultItems = parsed.Items.Select(r =>
         {
             var source = items.FirstOrDefault(i => i.Index == r.Index);
+            var notFound = r.Found == false || r.BestPrice is null;
             return new PriceCheckItem(
                 r.Index,
                 source?.Name ?? r.Name ?? "",
@@ -305,8 +321,10 @@ Output ONLY valid JSON. No commentary.
                 source?.Retailer ?? "",
                 r.BestPrice,
                 r.BestPriceStore,
-                r.Saving,
-                r.Notes);
+                Saving: null, // recomputed by the validator
+                r.Notes,
+                Outcome: notFound ? PriceCheckOutcome.NotFound : null,
+                Quantity: source?.Quantity ?? 1);
         }).ToList();
 
         return new PriceCheckResult(resultItems, parsed.SkippedSummary);
@@ -335,9 +353,9 @@ Output ONLY valid JSON. No commentary.
     private sealed record PriceCheckItemRaw(
         int Index,
         string? Name,
+        bool? Found,
         decimal? BestPrice,
         string? BestPriceStore,
-        decimal? Saving,
         string? Notes
     );
 
@@ -416,6 +434,7 @@ Do NOT use Tesco — it is not near the user; never include Tesco prices or Tesc
 Include loyalty card prices where available (Sainsbury's Nectar, Morrisons More).
 Use trolley.co.uk as a reference source.
 Make a genuine effort to find EVERY item before giving up — these are branded products that should be findable; try the brand + product name.
-Only set bestPrice=null when the item is truly an unbranded loose commodity (e.g. loose fruit/veg) or supermarket own-label with no cross-retailer equivalent. Do NOT skip a recognisable brand just because the first search is unclear.
+Report the LOWEST price you find at the allowed stores for every item, even when it is the same as or higher than what was paid — knowing the price paid was already the best is valuable too.
+Only report an item as not found after genuinely searching for it, or when it is truly an unbranded loose commodity (e.g. loose fruit/veg) or supermarket own-label with no cross-retailer equivalent. Do NOT give up on a recognisable brand just because the first search is unclear.
 """;
 }

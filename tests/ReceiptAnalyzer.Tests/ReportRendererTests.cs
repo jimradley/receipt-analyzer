@@ -43,6 +43,66 @@ public class ReportRendererTests
     }
 
     [Fact]
+    public void Price_check_renders_a_coverage_line()
+    {
+        // Sample items pre-date outcomes, so both derive as "cheaper elsewhere".
+        Assert.Contains("Price-checked 2 of 2 branded item(s): 2 cheaper elsewhere.", Report);
+    }
+
+    private static string RenderWithPriceChecks(ReceiptAnalyzer.Agent.PriceCheckResult priceChecks)
+    {
+        var sample = TestData.SampleResult();
+        return ReportRenderer.Render(sample with { PriceChecks = priceChecks });
+    }
+
+    [Fact]
+    public void Price_check_accounts_for_every_outcome()
+    {
+        var report = RenderWithPriceChecks(new(new List<ReceiptAnalyzer.Agent.PriceCheckItem>
+        {
+            new(0, "Cheaper Thing", 2.00m, "Morrisons", 1.50m, "Asda", 0.50m, null,
+                ReceiptAnalyzer.Agent.PriceCheckOutcome.CheaperElsewhere),
+            new(1, "Best Already Thing", 1.00m, "Morrisons", 1.20m, "Asda", -0.20m, null,
+                ReceiptAnalyzer.Agent.PriceCheckOutcome.AlreadyBest),
+            new(2, "Unfindable Thing", 3.00m, "Morrisons", null, null, null, null,
+                ReceiptAnalyzer.Agent.PriceCheckOutcome.NotFound),
+            new(3, "Errored Thing", 4.00m, "Morrisons", null, null, null, null,
+                ReceiptAnalyzer.Agent.PriceCheckOutcome.Unchecked),
+        }, null));
+
+        Assert.Contains(
+            "Price-checked 3 of 4 branded item(s): 1 cheaper elsewhere, 1 already best price, 1 not found, 1 not checked.",
+            report);
+        Assert.Contains("| Cheaper Thing | £2.00 | £1.50 | Asda | **£0.50** |", report);
+        Assert.Contains("Already the best price: Best Already Thing.", report);
+        Assert.Contains("Couldn't price: Unfindable Thing.", report);
+        Assert.Contains("Not checked (error — will retry on the next receipt): Errored Thing.", report);
+        // A found-but-not-cheaper price never appears in the cheaper-elsewhere table.
+        Assert.DoesNotContain("| Best Already Thing |", report);
+    }
+
+    [Fact]
+    public void Price_check_combined_saving_is_quantity_aware()
+    {
+        var report = RenderWithPriceChecks(new(new List<ReceiptAnalyzer.Agent.PriceCheckItem>
+        {
+            new(0, "Multibuy Beer", 2.00m, "Morrisons", 1.50m, "Asda", 0.50m, null,
+                ReceiptAnalyzer.Agent.PriceCheckOutcome.CheaperElsewhere, Quantity: 4),
+        }, null));
+
+        Assert.Contains("| Multibuy Beer | £2.00 ×4 | £1.50 | Asda | **£0.50** |", report);
+        Assert.Contains("Combined potential saving (this trip, branded items only): ~£2.00", report);
+    }
+
+    [Fact]
+    public void Null_price_checks_mean_nothing_was_eligible()
+    {
+        // Renderer treats null as "no eligible branded items" (failures now surface per item).
+        var report = ReportRenderer.Render(TestData.SampleResult() with { PriceChecks = null });
+        Assert.Contains("_No branded items to price-check on this receipt._", report);
+    }
+
+    [Fact]
     public void Never_recommends_tesco()
     {
         Assert.DoesNotContain("Tesco", Report);

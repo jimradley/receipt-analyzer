@@ -128,46 +128,56 @@ public sealed class ClaudeAgent : IAnalysisAgent
             ?? throw new InvalidOperationException("Classification response could not be parsed.");
     }
 
-    public async Task<PriceCheckResult> PriceCheckAsync(IReadOnlyList<BrandedItemForCheck> items, CancellationToken ct)
+    public async Task<PriceCheckResult> PriceCheckAsync(IReadOnlyList<BrandedItemForCheck> items, CancellationToken ct, string? hint = null)
     {
+        var model = _options.PriceCheckModel ?? _options.Model;
         var systemBlocks = BuildCachedSystem(PriceCheckSystemPrompt);
 
         var itemsJson = JsonSerializer.Serialize(
             items.Select(i => new { index = i.Index, name = i.Name, pricePaid = i.PricePaid, storePaid = i.Retailer }),
             JsonOptions);
 
+        var promptText = $$"""
+            Price-check these branded items from a UK supermarket receipt:
+            {{itemsJson}}
+
+            Return ONLY valid JSON of this exact shape:
+            {
+              "items": [
+                {
+                  "index": 0,
+                  "found": true,
+                  "bestPrice": 6.75,
+                  "bestPriceStore": "Sainsbury's",
+                  "notes": "250g pack, matches size bought"
+                }
+              ],
+              "skippedSummary": null
+            }
+            Field rules:
+            - found=true with bestPrice + bestPriceStore: the LOWEST current price you found at the allowed stores,
+              EVEN IF it is not cheaper than pricePaid. Never omit a price just because it isn't a saving.
+            - found=false (bestPrice null) ONLY after genuinely searching and failing to establish a price,
+              or when the item is an unbranded loose commodity / own-label with no cross-retailer equivalent.
+            - Compare like-for-like pack sizes; if you can only price a different size, still report it and say so in notes.
+            - Include ALL items in the output exactly once, keeping their original index.
+            """;
+
+        if (!string.IsNullOrWhiteSpace(hint))
+            promptText += "\n\nIMPORTANT: " + hint;
+
         var userContent = new JsonArray
         {
             new JsonObject
             {
                 ["type"] = "text",
-                ["text"] = $$"""
-                    Price-check these branded items from a UK supermarket receipt:
-                    {{itemsJson}}
-
-                    Return ONLY valid JSON of this exact shape:
-                    {
-                      "items": [
-                        {
-                          "index": 0,
-                          "bestPrice": 6.75,
-                          "bestPriceStore": "Sainsbury's",
-                          "saving": 3.75,
-                          "notes": null
-                        }
-                      ],
-                      "skippedSummary": "Items not checked: ..."
-                    }
-                    Set bestPrice to null if not found or not worth checking.
-                    Saving = pricePaid - bestPrice (positive = cheaper elsewhere).
-                    Include ALL items in the output.
-                    """
+                ["text"] = promptText
             }
         };
 
         var body = new JsonObject
         {
-            ["model"] = _options.Model,
+            ["model"] = model,
             ["max_tokens"] = 4096,
             ["tools"] = new JsonArray
             {
@@ -175,7 +185,11 @@ public sealed class ClaudeAgent : IAnalysisAgent
                 {
                     ["type"] = "web_search_20250305",
                     ["name"] = "web_search",
-                    ["max_uses"] = 8
+                    // Scale the search budget to the chunk being checked rather than sharing a
+                    // fixed budget across a whole receipt.
+                    ["max_uses"] = Math.Clamp(items.Count * 2, 3, 10),
+                    // Hard rule: never source prices from Tesco (prompt steering alone can leak).
+                    ["blocked_domains"] = new JsonArray { "tesco.com" }
                 }
             },
             ["system"] = systemBlocks,
@@ -213,7 +227,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
         if (string.IsNullOrWhiteSpace(text))
             throw new InvalidOperationException("No text block in Anthropic price check response.");
 
-        ReportUsage("price-check", doc["usage"]);
+        ReportUsage("price-check", doc["usage"], model);
 
         var json = ExtractJson(text);
         var parsed = JsonSerializer.Deserialize<PriceCheckRaw>(json, JsonOptions)
@@ -222,6 +236,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
         var resultItems = parsed.Items.Select(r =>
         {
             var source = items.FirstOrDefault(i => i.Index == r.Index);
+            var notFound = r.Found == false || r.BestPrice is null;
             return new PriceCheckItem(
                 r.Index,
                 source?.Name ?? r.Name ?? "",
@@ -229,8 +244,10 @@ public sealed class ClaudeAgent : IAnalysisAgent
                 source?.Retailer ?? "",
                 r.BestPrice,
                 r.BestPriceStore,
-                r.Saving,
-                r.Notes);
+                Saving: null, // recomputed by the validator
+                r.Notes,
+                Outcome: notFound ? PriceCheckOutcome.NotFound : null,
+                Quantity: source?.Quantity ?? 1);
         }).ToList();
 
         return new PriceCheckResult(resultItems, parsed.SkippedSummary);
@@ -330,9 +347,9 @@ public sealed class ClaudeAgent : IAnalysisAgent
     private sealed record PriceCheckItemRaw(
         int Index,
         string? Name,
+        bool? Found,
         decimal? BestPrice,
         string? BestPriceStore,
-        decimal? Saving,
         string? Notes
     );
 
@@ -410,7 +427,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
         };
     }
 
-    private void ReportUsage(string stage, JsonNode? usage)
+    private void ReportUsage(string stage, JsonNode? usage, string? model = null)
     {
         if (usage is null) return;
         var input = (int?)usage["input_tokens"] ?? 0;
@@ -420,7 +437,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
         _logger.LogInformation(
             "Claude {Stage} usage: input={Input} output={Output} cache_read={CacheRead} cache_create={CacheCreate}",
             stage, input, output, cacheRead, cacheCreate);
-        UsageReporter.Report(new StageUsage(stage, _options.Model, input, output, cacheRead, cacheCreate));
+        UsageReporter.Report(new StageUsage(stage, model ?? _options.Model, input, output, cacheRead, cacheCreate));
     }
 
     private string LoadRules()
@@ -511,7 +528,8 @@ Do NOT use Tesco — it is not near the user; never include Tesco prices or Tesc
 Include loyalty card prices where available (Sainsbury's Nectar, Morrisons More).
 Use trolley.co.uk as a reference source.
 Make a genuine effort to find EVERY item before giving up — these are branded products that should be findable; try the brand + product name.
-Only set bestPrice=null when the item is truly an unbranded loose commodity (e.g. loose fruit/veg) or supermarket own-label with no cross-retailer equivalent. Do NOT skip a recognisable brand just because the first search is unclear.
+Report the LOWEST price you find at the allowed stores for every item, even when it is the same as or higher than what was paid — knowing the price paid was already the best is valuable too.
+Only report an item as not found after genuinely searching for it, or when it is truly an unbranded loose commodity (e.g. loose fruit/veg) or supermarket own-label with no cross-retailer equivalent. Do NOT give up on a recognisable brand just because the first search is unclear.
 Output ONLY valid JSON. No commentary.
 """;
 }

@@ -1,3 +1,4 @@
+using ReceiptAnalyzer.Agent;
 using ReceiptAnalyzer.Ledger;
 
 namespace ReceiptAnalyzer.Tests;
@@ -52,7 +53,8 @@ public class PriceCacheStoreTests : IDisposable
         var data = new PriceCacheData();
         PriceCacheStore.Upsert(data, new[] { Entry("maltesers", 1.00m, today.AddDays(-3)) });
 
-        Assert.True(PriceCacheStore.TryGetFresh(data, "maltesers", today.AddDays(-7), out var hit));
+        Assert.True(PriceCacheStore.TryGetFresh(
+            data, "maltesers", today.AddDays(-7), today.AddDays(-1), out var hit));
         Assert.NotNull(hit);
         Assert.Equal(1.00m, hit!.BestPrice);
     }
@@ -64,20 +66,56 @@ public class PriceCacheStoreTests : IDisposable
         var data = new PriceCacheData();
         PriceCacheStore.Upsert(data, new[] { Entry("maltesers", 1.00m, today.AddDays(-10)) });
 
-        Assert.False(PriceCacheStore.TryGetFresh(data, "maltesers", today.AddDays(-7), out var hit));
+        Assert.False(PriceCacheStore.TryGetFresh(
+            data, "maltesers", today.AddDays(-7), today.AddDays(-1), out var hit));
         Assert.Null(hit);
     }
 
     [Fact]
-    public void A_null_best_price_is_cached_and_treated_as_a_fresh_hit()
+    public void A_legacy_null_best_price_is_cached_and_treated_as_a_fresh_hit()
     {
-        // "checked, nothing cheaper" must count as a hit so the item isn't re-searched within the window.
+        // Legacy rows (no outcome) with a null price meant "checked, nothing cheaper" and must keep
+        // the standard freshness window so the item isn't re-searched.
         var today = new DateOnly(2026, 6, 24);
         var data = new PriceCacheData();
-        PriceCacheStore.Upsert(data, new[] { Entry("commodity-eggs", null, today.AddDays(-1)) });
+        PriceCacheStore.Upsert(data, new[] { Entry("commodity-eggs", null, today.AddDays(-3)) });
 
-        Assert.True(PriceCacheStore.TryGetFresh(data, "commodity-eggs", today.AddDays(-7), out var hit));
+        Assert.True(PriceCacheStore.TryGetFresh(
+            data, "commodity-eggs", today.AddDays(-7), today.AddDays(-1), out var hit));
         Assert.NotNull(hit);
         Assert.Null(hit!.BestPrice);
+    }
+
+    [Fact]
+    public void A_not_found_entry_expires_on_the_shorter_window()
+    {
+        // A genuine "couldn't price it" answer suppresses re-searching only briefly, so a lazy or
+        // transiently-failing search doesn't hide the item for a whole week.
+        var today = new DateOnly(2026, 6, 24);
+        var data = new PriceCacheData();
+        var notFound = Entry("obscure-beer", null, today.AddDays(-3)) with { Outcome = PriceCheckOutcome.NotFound };
+        PriceCacheStore.Upsert(data, new[] { notFound });
+
+        Assert.False(PriceCacheStore.TryGetFresh(
+            data, "obscure-beer", today.AddDays(-7), today.AddDays(-1), out var stale));
+        Assert.Null(stale);
+
+        // Still fresh inside the not-found window.
+        Assert.True(PriceCacheStore.TryGetFresh(
+            data, "obscure-beer", today.AddDays(-7), today.AddDays(-4), out var hit));
+        Assert.Equal(PriceCheckOutcome.NotFound, hit!.Outcome);
+    }
+
+    [Fact]
+    public void A_priced_entry_keeps_the_full_window_even_when_the_not_found_window_has_passed()
+    {
+        var today = new DateOnly(2026, 6, 24);
+        var data = new PriceCacheData();
+        var priced = Entry("maltesers", 1.00m, today.AddDays(-3)) with { Outcome = PriceCheckOutcome.AlreadyBest };
+        PriceCacheStore.Upsert(data, new[] { priced });
+
+        Assert.True(PriceCacheStore.TryGetFresh(
+            data, "maltesers", today.AddDays(-7), today.AddDays(-1), out var hit));
+        Assert.Equal(1.00m, hit!.BestPrice);
     }
 }

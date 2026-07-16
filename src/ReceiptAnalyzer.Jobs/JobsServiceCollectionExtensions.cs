@@ -41,6 +41,8 @@ public static class JobsServiceCollectionExtensions
                 CacheReadPerMTok: 0.30m, CacheWritePerMTok: 3.75m),
             ["gpt-4o"] = new(InputPerMTok: 2.50m, OutputPerMTok: 10.00m,
                 CacheReadPerMTok: 1.25m, CacheWritePerMTok: 0m),
+            ["gpt-5-mini"] = new(InputPerMTok: 0.25m, OutputPerMTok: 2.00m,
+                CacheReadPerMTok: 0.025m, CacheWritePerMTok: 0m),
         };
 
         var modelsSection = configuration.GetSection("Pricing:Models");
@@ -57,6 +59,9 @@ public static class JobsServiceCollectionExtensions
         {
             Retention = TimeSpan.FromDays(configuration.GetValue("Jobs:RetentionDays", 14)),
             PriceCacheDays = configuration.GetValue("Jobs:PriceCacheDays", 7),
+            PriceCacheNotFoundDays = configuration.GetValue("Jobs:PriceCacheNotFoundDays", 1),
+            PriceCheckChunkSize = configuration.GetValue("Jobs:PriceCheckChunkSize", 4),
+            PriceCheckRetryMax = configuration.GetValue("Jobs:PriceCheckRetryMax", 8),
             UsdToGbp = configuration.GetValue("Pricing:UsdToGbp", 0.79m),
             Pricing = pricing,
         };

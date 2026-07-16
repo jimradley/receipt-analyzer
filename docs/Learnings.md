@@ -80,6 +80,23 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
   - Don't trust `TrimmerRootAssembly` to preserve constructor parameter names; prefer source-gen over fighting the trimmer.
   - Reproduce WebAuthn flows with a **CDP virtual authenticator** before declaring a passkey bug a caching issue.
 
+## 10. One batched LLM web-search call silently starves most of the items in it
+
+- **What bit us:** price checking felt "weak — skipping or ignoring items". Every cache-miss item went into **one** agent call sharing a fixed web-search budget (Claude `max_uses: 8` for a whole receipt; one OpenAI Responses call), so on a 15+ item receipt the model quietly nulled whatever it couldn't afford to search. Three amplifiers hid it: a null price meant *both* "nothing cheaper" and "couldn't find it" and got **cached for 7 days**; one malformed response threw away the whole batch (job still "succeeded"); and items the model omitted from its JSON weren't back-filled, so they vanished without trace.
+- **Root cause:** batch size and search budget didn't scale together, and the result schema had no way to say *why* an item had no price — absence of evidence was indistinguishable from evidence of absence, then durably cached.
+- **Fix:** chunk the batch (default 4/call) with a per-chunk search budget; one **individual retry pass** with a "search harder" hint; a per-item `Outcome` (`cheaper-elsewhere` / `already-best` / `not-found` / `unchecked`) with validator back-fill so every requested item comes back exactly once; ask for the best price found **even when it isn't cheaper**; cache not-found on a 1-day TTL (vs 7 for prices) and never cache errors; render a coverage line so gaps are visible.
+- **Rules:**
+  - When an LLM call fans out over N items with a shared tool budget, **chunk so budget ∝ items** and make failure lose only its chunk.
+  - Never let "no answer" share a representation with "answer: nothing found" — and give negative results a much shorter cache TTL than positive ones.
+  - Validate LLM list responses by **back-filling against the request list**, not by trusting the response to be complete.
+
+## 11. Per-stage LLM plumbing assumptions break when a stage makes multiple calls
+
+- **What bit us (latent):** usage merging did `RemoveAll(stage) + Add(entry)` per call, so a stage with >1 call kept only the **last** call's tokens — re-extraction was already being undercounted, and chunked price checks would have made the cost telemetry badly wrong.
+- **Fix:** group the attempt's usage by stage and **sum per (stage, model)** before replacing; the report footer lists distinct models (stages can now run different models via `Agent:PriceCheckModel`).
+- **Also learned:** on the OpenAI Responses API the web-search tool type is **model-dependent** (`web_search` for gpt-5-family, `web_search_preview` for gpt-4o — the new type 400s on old models and vice versa), and search results bill as *input* tokens (~60–90K per searching call), so a cheap-per-token model matters more than it looks. Each searching call runs 1–3 min; budget pipeline latency accordingly.
+- **Rule:** any "one entry per stage" assumption (usage, retries, logging) must survive a stage making N calls — sum, don't overwrite; and pin tool variants per model family, not globally.
+
 ---
 
 ## What worked / keep doing

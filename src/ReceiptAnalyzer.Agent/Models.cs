@@ -42,9 +42,34 @@ public sealed record BrandedItemForCheck(
     int Index,
     string Name,
     decimal PricePaid,
-    string Retailer
+    string Retailer,
+    decimal Quantity = 1
 );
 
+/// <summary>
+/// Per-item price-check outcomes. Strings (not an enum) so persisted job/cache JSON stays
+/// trivially forward- and backward-compatible.
+/// </summary>
+public static class PriceCheckOutcome
+{
+    /// <summary>A cheaper current price was found at an allowed store.</summary>
+    public const string CheaperElsewhere = "cheaper-elsewhere";
+
+    /// <summary>The market was checked and the price paid is already the best (or equal).</summary>
+    public const string AlreadyBest = "already-best";
+
+    /// <summary>The item was searched for but no price could be established.</summary>
+    public const string NotFound = "not-found";
+
+    /// <summary>The item was never resolved — call failed or the model omitted it.</summary>
+    public const string Unchecked = "unchecked";
+}
+
+/// <summary>
+/// <see cref="BestPrice"/> is the best market price found at the allowed stores even when it is
+/// NOT cheaper than what was paid (<see cref="Saving"/> ≤ 0 → outcome "already-best"). A null
+/// price means the item couldn't be priced — see <see cref="Outcome"/> for why.
+/// </summary>
 public sealed record PriceCheckItem(
     int Index,
     string Name,
@@ -53,7 +78,9 @@ public sealed record PriceCheckItem(
     decimal? BestPrice,
     string? BestPriceStore,
     decimal? Saving,
-    string? Notes
+    string? Notes,
+    string? Outcome = null,
+    decimal Quantity = 1
 );
 
 public sealed record PriceCheckResult(

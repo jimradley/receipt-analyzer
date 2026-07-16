@@ -139,9 +139,9 @@ public static class ReportRenderer
 
         var inTok = usage.Sum(u => u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens);
         var outTok = usage.Sum(u => u.OutputTokens);
-        var model = usage[0].Model;
+        var models = string.Join(", ", usage.Select(u => u.Model).Distinct());
         var cost = result.EstimatedCostGbp is { } c ? $" (~£{c:F4} est.)" : "";
-        sb.AppendLine($"- Token usage: {inTok:N0} in / {outTok:N0} out across {usage.Count} call(s){cost} [{model}]");
+        sb.AppendLine($"- Token usage: {inTok:N0} in / {outTok:N0} out across {usage.Count} stage(s){cost} [{models}]");
     }
 
     private static void RenderSeasonality(StringBuilder sb, SeasonalityResult? seasonality)
@@ -184,37 +184,69 @@ public static class ReportRenderer
 
     private static void RenderPriceChecks(StringBuilder sb, PriceCheckResult? priceChecks)
     {
-        if (priceChecks is null)
+        if (priceChecks is null || priceChecks.Items.Count == 0)
         {
-            sb.AppendLine("_Price check not available for this receipt._");
+            sb.AppendLine("_No branded items to price-check on this receipt._");
             sb.AppendLine();
             return;
         }
 
-        var checkable = priceChecks.Items
-            .Where(p => p.BestPrice.HasValue && p.Saving.HasValue)
-            .OrderByDescending(p => p.Saving)
-            .ToList();
+        var byOutcome = priceChecks.Items.ToLookup(OutcomeOf);
+        var cheaper = byOutcome[PriceCheckOutcome.CheaperElsewhere].OrderByDescending(p => p.Saving).ToList();
+        var alreadyBest = byOutcome[PriceCheckOutcome.AlreadyBest].ToList();
+        var notFound = byOutcome[PriceCheckOutcome.NotFound].ToList();
+        var unresolved = byOutcome[PriceCheckOutcome.Unchecked].ToList();
 
-        if (checkable.Count == 0)
+        // Coverage line: every branded item is accounted for, so a skipped or failed check is
+        // visible instead of silently vanishing. "Checked" = a search actually happened.
+        var total = priceChecks.Items.Count;
+        var searched = total - unresolved.Count;
+        var segments = new List<string>();
+        if (cheaper.Count > 0) segments.Add($"{cheaper.Count} cheaper elsewhere");
+        if (alreadyBest.Count > 0) segments.Add($"{alreadyBest.Count} already best price");
+        if (notFound.Count > 0) segments.Add($"{notFound.Count} not found");
+        if (unresolved.Count > 0) segments.Add($"{unresolved.Count} not checked");
+        sb.AppendLine($"Price-checked {searched} of {total} branded item(s): {string.Join(", ", segments)}.");
+        sb.AppendLine();
+
+        if (cheaper.Count == 0)
         {
-            sb.AppendLine("_No branded items found with a cheaper alternative this trip._");
+            sb.AppendLine("_No cheaper alternatives found this trip._");
             sb.AppendLine();
         }
         else
         {
             sb.AppendLine("| Item | Paid | Cheapest | At | Saving |");
             sb.AppendLine("|---|---|---|---|---|");
-            foreach (var p in checkable)
+            foreach (var p in cheaper)
             {
                 var savingBold = p.Saving >= 0.30m ? $"**£{p.Saving:F2}**" : $"£{p.Saving:F2}";
-                sb.AppendLine($"| {p.Name} | £{p.PricePaid:F2} | £{p.BestPrice:F2} | {p.BestPriceStore} | {savingBold} |");
+                var paid = p.Quantity > 1 ? $"£{p.PricePaid:F2} ×{p.Quantity:0.##}" : $"£{p.PricePaid:F2}";
+                sb.AppendLine($"| {p.Name} | {paid} | £{p.BestPrice:F2} | {p.BestPriceStore} | {savingBold} |");
             }
             sb.AppendLine();
 
-            var totalSaving = checkable.Where(p => p.Saving >= 0.30m).Sum(p => p.Saving!.Value);
+            // Per-trip total: unit saving × quantity, so multi-buys aren't undercounted.
+            var totalSaving = cheaper.Where(p => p.Saving >= 0.30m)
+                .Sum(p => p.Saving!.Value * (p.Quantity > 0 ? p.Quantity : 1));
             if (totalSaving > 0)
                 sb.AppendLine($"**Combined potential saving (this trip, branded items only): ~£{totalSaving:F2}**");
+            sb.AppendLine();
+        }
+
+        if (alreadyBest.Count > 0)
+        {
+            sb.AppendLine($"Already the best price: {string.Join(", ", alreadyBest.Select(p => p.Name))}.");
+            sb.AppendLine();
+        }
+        if (notFound.Count > 0)
+        {
+            sb.AppendLine($"Couldn't price: {string.Join(", ", notFound.Select(p => p.Name))}.");
+            sb.AppendLine();
+        }
+        if (unresolved.Count > 0)
+        {
+            sb.AppendLine($"Not checked (error — will retry on the next receipt): {string.Join(", ", unresolved.Select(p => p.Name))}.");
             sb.AppendLine();
         }
 
@@ -224,6 +256,15 @@ public static class ReportRenderer
             sb.AppendLine();
         }
     }
+
+    /// <summary>
+    /// Reports rendered from jobs persisted before outcomes existed derive one: a price with a
+    /// positive saving was "cheaper elsewhere"; anything else was the old "nothing cheaper" bucket.
+    /// </summary>
+    private static string OutcomeOf(PriceCheckItem p) =>
+        p.Outcome ?? (p.BestPrice.HasValue && p.Saving > 0
+            ? PriceCheckOutcome.CheaperElsewhere
+            : PriceCheckOutcome.AlreadyBest);
 
     private static void RenderPersonalPrices(StringBuilder sb, IReadOnlyList<PersonalPriceComparison>? personal)
     {

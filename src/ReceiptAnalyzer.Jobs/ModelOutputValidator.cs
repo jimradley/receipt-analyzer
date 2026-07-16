@@ -59,28 +59,45 @@ public static class ModelOutputValidator
     public static PriceCheckResult Repair(
         IReadOnlyList<BrandedItemForCheck> requested, PriceCheckResult value)
     {
-        var byIndex = requested.ToDictionary(x => x.Index);
-        var items = value.Items
-            .Where(x => byIndex.ContainsKey(x.Index))
+        var requestedIndexes = requested.Select(r => r.Index).ToHashSet();
+        var byIndex = value.Items
+            .Where(x => requestedIndexes.Contains(x.Index))
             .GroupBy(x => x.Index)
-            .Select(g => g.First())
-            .Select(x =>
+            // Prefer a duplicate that carries a price over one that doesn't; then the cheapest.
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(x => x.BestPrice.HasValue).ThenBy(x => x.BestPrice).First());
+
+        // Every requested item comes back exactly once with an outcome — an item the model
+        // omitted is recorded as "unchecked" rather than silently vanishing.
+        var items = requested.Select(request =>
+        {
+            if (!byIndex.TryGetValue(request.Index, out var x))
+                return new PriceCheckItem(
+                    request.Index, request.Name, request.PricePaid, request.Retailer,
+                    null, null, null, "No result returned.",
+                    PriceCheckOutcome.Unchecked, request.Quantity);
+
+            var best = NonNegative(x.BestPrice);
+            var saving = best is { } price ? request.PricePaid - price : (decimal?)null;
+            var outcome = best is null
+                ? PriceCheckOutcome.NotFound
+                : saving > 0 ? PriceCheckOutcome.CheaperElsewhere : PriceCheckOutcome.AlreadyBest;
+            return x with
             {
-                var request = byIndex[x.Index];
-                var best = NonNegative(x.BestPrice);
-                return x with
-                {
-                    Name = request.Name,
-                    PricePaid = request.PricePaid,
-                    StorePaid = request.Retailer,
-                    BestPrice = best,
-                    BestPriceStore = Clean(x.BestPriceStore),
-                    Saving = best is { } price ? request.PricePaid - price : null,
-                    Notes = Clean(x.Notes)
-                };
-            })
-            .OrderBy(x => x.Index)
-            .ToList();
+                Name = request.Name,
+                PricePaid = request.PricePaid,
+                StorePaid = request.Retailer,
+                BestPrice = best,
+                BestPriceStore = best is null ? null : Clean(x.BestPriceStore),
+                Saving = saving,
+                Notes = Clean(x.Notes),
+                Outcome = outcome,
+                Quantity = request.Quantity
+            };
+        })
+        .OrderBy(x => x.Index)
+        .ToList();
         return new PriceCheckResult(items, Clean(value.SkippedSummary));
     }
 

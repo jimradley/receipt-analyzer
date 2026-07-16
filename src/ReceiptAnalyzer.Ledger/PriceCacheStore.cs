@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using ReceiptAnalyzer.Agent;
 
 namespace ReceiptAnalyzer.Ledger;
 
@@ -43,8 +44,14 @@ public sealed class PriceCacheStore
         }
     }
 
-    /// <summary>Returns the entry for <paramref name="key"/> if it was checked on or after <paramref name="cutoff"/>.</summary>
-    public static bool TryGetFresh(PriceCacheData data, string key, DateOnly cutoff, out PriceCacheEntry? entry)
+    /// <summary>
+    /// Returns the entry for <paramref name="key"/> if it is still fresh. Priced entries (and
+    /// legacy "nothing cheaper" rows) stay usable until <paramref name="foundCutoff"/>; "not-found"
+    /// entries expire on the shorter <paramref name="notFoundCutoff"/> so they get re-searched soon.
+    /// </summary>
+    public static bool TryGetFresh(
+        PriceCacheData data, string key, DateOnly foundCutoff, DateOnly notFoundCutoff,
+        out PriceCacheEntry? entry)
     {
         var separator = key.LastIndexOf('|');
         var product = separator >= 0 ? key[..separator] : key;
@@ -62,6 +69,7 @@ public sealed class PriceCacheStore
             entry = null;
             return false;
         }
+        var cutoff = entry.Outcome == PriceCheckOutcome.NotFound ? notFoundCutoff : foundCutoff;
         if (checkedOn < cutoff)
         {
             entry = null;

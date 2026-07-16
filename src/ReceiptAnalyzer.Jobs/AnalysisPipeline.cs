@@ -99,16 +99,19 @@ public sealed class AnalysisPipeline
             //    so only cache-misses incur a web search.
             if (!job.PriceChecksDone)
             {
+                // The "M " prefix is Morrisons own-label shorthand — only meaningful on a Morrisons
+                // receipt. Applying it everywhere silently dropped genuine brands starting "M ".
+                var isMorrisons = ext.Retailer.Contains("Morrisons", StringComparison.OrdinalIgnoreCase);
                 var branded = ext.Items
                     .Select((item, idx) => (item, idx, c: classByIndex.GetValueOrDefault(idx)))
                     .Where(t => t.c is not null && !t.c.IsOwnLabel &&
-                                !t.item.Name.StartsWith("M ", StringComparison.OrdinalIgnoreCase))
+                                !(isMorrisons && t.item.Name.StartsWith("M ", StringComparison.OrdinalIgnoreCase)))
                     // Search on the expanded canonical name when the classifier provided one, so cryptic
                     // receipt abbreviations don't make the price-checker give up.
                     .Select(t => new BrandedItemForCheck(
                         t.idx,
                         string.IsNullOrWhiteSpace(t.c!.CanonicalName) ? t.item.Name : t.c!.CanonicalName!,
-                        t.item.UnitPrice, ext.Retailer))
+                        t.item.UnitPrice, ext.Retailer, t.item.Quantity))
                     .ToList();
 
                 if (branded.Count > 0)
@@ -234,16 +237,26 @@ public sealed class AnalysisPipeline
         _store.DeleteImage(job.Id); // terminal — won't resume
     }
 
+    private const string RetryHint =
+        "This is a retry — search harder before giving up: try alternative product-name phrasings " +
+        "and check trolley.co.uk directly. Report the best price you find even if it is not cheaper " +
+        "than what was paid.";
+
     /// <summary>
-    /// Price-checks the branded items, reusing cache entries newer than the configured window so only
-    /// cache-misses hit the web-search agent. A fully-cached receipt makes no agent call at all. Fresh
-    /// results (including "nothing cheaper" / not-found) are written back to the cache.
+    /// Price-checks the branded items, reusing cache entries that are still fresh so only
+    /// cache-misses hit the web-search agent (a fully-cached receipt makes no agent call at all).
+    /// Misses are checked in small chunks — each gets its own search budget and a failure only
+    /// loses its chunk — then unresolved items get one individual retry with a stronger prompt.
+    /// Every branded item comes back with an outcome; nothing silently vanishes. Priced and
+    /// not-found results are written back to the cache (never errors).
     /// </summary>
     private async Task<PriceCheckResult?> PriceCheckWithCacheAsync(
         IReadOnlyList<BrandedItemForCheck> branded, DateTime london, CancellationToken ct)
     {
         var cache = _priceCache.Load();
-        var cutoff = DateOnly.FromDateTime(london.Date).AddDays(-_options.PriceCacheDays);
+        var today = DateOnly.FromDateTime(london.Date);
+        var foundCutoff = today.AddDays(-_options.PriceCacheDays);
+        var notFoundCutoff = today.AddDays(-_options.PriceCacheNotFoundDays);
         var checkedOn = london.ToString("yyyy-MM-dd");
 
         var hits = new List<PriceCheckItem>();
@@ -251,12 +264,10 @@ public sealed class AnalysisPipeline
         foreach (var b in branded)
         {
             var key = KeyNormaliser.PriceKey(b.Name);
-            if (PriceCacheStore.TryGetFresh(cache, key, cutoff, out var entry) && entry is not null)
+            if (PriceCacheStore.TryGetFresh(cache, key, foundCutoff, notFoundCutoff, out var entry)
+                && entry is not null)
             {
-                var saving = entry.BestPrice is { } best ? b.PricePaid - best : (decimal?)null;
-                hits.Add(new PriceCheckItem(
-                    b.Index, b.Name, b.PricePaid, b.Retailer,
-                    entry.BestPrice, entry.BestPriceStore, saving, entry.Notes));
+                hits.Add(FromCacheEntry(b, entry));
             }
             else
             {
@@ -264,42 +275,120 @@ public sealed class AnalysisPipeline
             }
         }
 
-        PriceCheckResult? fresh = null;
-        if (misses.Count > 0)
-        {
-            try
-            {
-                fresh = ModelOutputValidator.Repair(
-                    misses, await _agent.PriceCheckAsync(misses, ct));
-            }
-            catch (Exception ex) { _logger.LogWarning(ex, "Price check failed; continuing without it."); }
-        }
+        // Pass 1: chunked checks.
+        var results = new Dictionary<int, PriceCheckItem>();
+        var summaries = new List<string>();
+        foreach (var chunk in misses.Chunk(Math.Max(1, _options.PriceCheckChunkSize)))
+            await CheckChunkAsync(chunk, hint: null, replaceOnlyWithPrice: false, results, summaries, ct);
+
+        // Pass 2: retry unresolved items individually. Errored items first — they were never
+        // actually searched — then not-founds, up to the configured cap.
+        var retryable = misses
+            .Where(b => results[b.Index].Outcome
+                is PriceCheckOutcome.Unchecked or PriceCheckOutcome.NotFound)
+            .OrderBy(b => results[b.Index].Outcome == PriceCheckOutcome.NotFound ? 1 : 0)
+            .Take(_options.PriceCheckRetryMax)
+            .ToList();
+        foreach (var b in retryable)
+            await CheckChunkAsync(new[] { b }, RetryHint, replaceOnlyWithPrice: true, results, summaries, ct);
 
         _logger.LogInformation(
-            "Price check: {Hits} from cache, {Misses} searched.", hits.Count, fresh?.Items.Count ?? 0);
+            "Price check: {Hits} from cache, {Misses} searched ({Retried} retried).",
+            hits.Count, misses.Count, retryable.Count);
 
-        if (fresh is not null)
+        // Cache real answers (a price, or a genuine not-found) — never errors, so an unchecked
+        // item is re-attempted on the next receipt.
+        var cacheable = misses
+            .Select(b => results[b.Index])
+            .Where(f => f.Outcome != PriceCheckOutcome.Unchecked)
+            .ToList();
+        if (cacheable.Count > 0)
         {
-            PriceCacheStore.Upsert(cache, fresh.Items.Select(f => new PriceCacheEntry(
+            PriceCacheStore.Upsert(cache, cacheable.Select(f => new PriceCacheEntry(
                 KeyNormaliser.PriceKey(f.Name), f.BestPrice, f.BestPriceStore, f.Notes, checkedOn,
-                KeyNormaliser.Product(f.Name), KeyNormaliser.Pack(f.Name))));
+                KeyNormaliser.Product(f.Name), KeyNormaliser.Pack(f.Name), f.Outcome)));
             _priceCache.Save(cache);
         }
 
-        var items = hits.Concat(fresh?.Items ?? Enumerable.Empty<PriceCheckItem>())
+        var items = hits.Concat(misses.Select(b => results[b.Index]))
             .OrderBy(i => i.Index)
             .ToList();
         if (items.Count == 0) return null;
-        return new PriceCheckResult(items, fresh?.SkippedSummary);
+        var summary = summaries.Count > 0 ? string.Join("; ", summaries.Distinct()) : null;
+        return new PriceCheckResult(items, summary);
     }
 
-    /// <summary>Adds this attempt's per-stage usage to the job, replacing any prior entry for the same stage.</summary>
+    /// <summary>
+    /// Runs one agent call for <paramref name="chunk"/> and folds the repaired results into
+    /// <paramref name="results"/>. A failed call marks the chunk's items "unchecked" instead of
+    /// discarding everything. With <paramref name="replaceOnlyWithPrice"/> (the retry pass), an
+    /// existing genuine answer is never downgraded by a retry that produced nothing better.
+    /// </summary>
+    private async Task CheckChunkAsync(
+        IReadOnlyList<BrandedItemForCheck> chunk, string? hint, bool replaceOnlyWithPrice,
+        Dictionary<int, PriceCheckItem> results, List<string> summaries, CancellationToken ct)
+    {
+        PriceCheckResult? fresh = null;
+        try
+        {
+            fresh = ModelOutputValidator.Repair(chunk, await _agent.PriceCheckAsync(chunk, ct, hint));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Price check call failed for {Count} item(s); continuing.", chunk.Count);
+        }
+
+        foreach (var b in chunk)
+        {
+            var item = fresh?.Items.FirstOrDefault(i => i.Index == b.Index)
+                ?? new PriceCheckItem(b.Index, b.Name, b.PricePaid, b.Retailer,
+                    null, null, null, "Price check failed.", PriceCheckOutcome.Unchecked, b.Quantity);
+
+            if (replaceOnlyWithPrice && item.BestPrice is null
+                && results.TryGetValue(b.Index, out var existing)
+                && existing.Outcome != PriceCheckOutcome.Unchecked)
+            {
+                continue; // keep the pass-1 answer; the retry found nothing better
+            }
+            results[b.Index] = item;
+        }
+
+        if (!string.IsNullOrWhiteSpace(fresh?.SkippedSummary))
+            summaries.Add(fresh.SkippedSummary);
+    }
+
+    /// <summary>Maps a fresh cache entry onto this receipt's item (saving/outcome are per-receipt).</summary>
+    private static PriceCheckItem FromCacheEntry(BrandedItemForCheck b, PriceCacheEntry entry)
+    {
+        var saving = entry.BestPrice is { } best ? b.PricePaid - best : (decimal?)null;
+        // Legacy rows (null Outcome) with no price meant "checked, nothing cheaper" — closest to
+        // already-best. Rows written by this version carry an explicit outcome.
+        var outcome = entry.BestPrice is not null
+            ? (saving > 0 ? PriceCheckOutcome.CheaperElsewhere : PriceCheckOutcome.AlreadyBest)
+            : entry.Outcome == PriceCheckOutcome.NotFound
+                ? PriceCheckOutcome.NotFound
+                : PriceCheckOutcome.AlreadyBest;
+        return new PriceCheckItem(
+            b.Index, b.Name, b.PricePaid, b.Retailer,
+            entry.BestPrice, entry.BestPriceStore, saving, entry.Notes, outcome, b.Quantity);
+    }
+
+    /// <summary>
+    /// Adds this attempt's per-stage usage to the job, replacing any prior entry for the same
+    /// stage. Multiple calls within one attempt (chunked price checks, a re-extraction) are summed
+    /// per stage+model rather than overwriting each other.
+    /// </summary>
     private static void MergeUsage(AnalysisJob job, IReadOnlyList<StageUsage> attempt)
     {
-        foreach (var u in attempt)
+        foreach (var stage in attempt.GroupBy(u => u.Stage))
         {
-            job.TokenUsage.RemoveAll(e => e.Stage == u.Stage);
-            job.TokenUsage.Add(u);
+            job.TokenUsage.RemoveAll(e => e.Stage == stage.Key);
+            foreach (var model in stage.GroupBy(u => u.Model))
+            {
+                job.TokenUsage.Add(new StageUsage(stage.Key, model.Key,
+                    model.Sum(u => u.InputTokens), model.Sum(u => u.OutputTokens),
+                    model.Sum(u => u.CacheReadTokens), model.Sum(u => u.CacheCreationTokens)));
+            }
         }
     }
 
