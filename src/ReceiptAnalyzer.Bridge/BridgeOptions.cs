@@ -34,10 +34,11 @@ public sealed class BridgeOptions
     /// The ONLY tools the bridge will ever pass to the host `claude` CLI. A caller-supplied tool list
     /// is intersected against this — the `claude` process runs un-sandboxed on the host, so allowing
     /// a request to add Bash/Write/Edit would be remote code execution. Read is needed for receipt
-    /// images; WebSearch for price checks. Do not add execution/file-write tools here.
+    /// images; WebSearch for price checks; WebFetch lets research callers (e.g. InfoGrid's area
+    /// check) read official pages directly. Do not add execution/file-write tools here.
     /// </summary>
     public HashSet<string> ToolAllowlist { get; set; } = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Read", "WebSearch",
+        "Read", "WebSearch", "WebFetch",
     };
 }
