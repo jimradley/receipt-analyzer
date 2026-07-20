@@ -38,6 +38,7 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **What bit us:** `MSB3027`/`MSB3021` — couldn't copy/overwrite DLLs.
 - **Root cause:** a manual-test `dotnet run` server was still holding the build outputs.
 - **Rule:** stop any running instance (check the dev port / kill the PID) before rebuilding. Don't leave manual-test servers running across tasks.
+- **Addendum — killing a scheduled-task-owned process from a sandboxed agent tool can silently no-op:** the Bridge's host process (started by a logon-triggered Scheduled Task) held a file lock that blocked `dotnet publish`. `Stop-Process -Force`, `taskkill /F`, and even a `dangerouslyDisableSandbox` PowerShell call all reported success (or "no running instance") while `tasklist`/`Get-Process` kept showing the same PID and the publish kept failing with the same lock. **Root cause:** the agent's shell tools run in a context that can *see* the interactive session's process table but can't reliably *act* on it — termination calls return without error yet don't take effect. **Rule:** don't trust a green exit code from `Stop-Process`/`taskkill` run via an agent tool as proof a process is actually gone — verify by retrying the operation that needed it dead (here, the publish), not by re-querying the process list, which can also be stale/inconsistent across tool invocations. If a stuck process blocks a rebuild and repeated kill attempts don't clear the lock, stop fighting it from the agent session and have the human kill it (or reboot the host) directly.
 
 ## 6. A `try/catch` around a pipeline stage can hide a `NotImplementedException` forever
 
@@ -97,6 +98,13 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Also learned:** on the OpenAI Responses API the web-search tool type is **model-dependent** (`web_search` for gpt-5-family, `web_search_preview` for gpt-4o — the new type 400s on old models and vice versa), and search results bill as *input* tokens (~60–90K per searching call), so a cheap-per-token model matters more than it looks. Each searching call runs 1–3 min; budget pipeline latency accordingly.
 - **Rule:** any "one entry per stage" assumption (usage, retries, logging) must survive a stage making N calls — sum, don't overwrite; and pin tool variants per model family, not globally.
 
+## 12. A logon-triggered Scheduled Task is not a reliable way to run a headless background host
+
+- **What bit us:** the Bridge was started via a Scheduled Task (`LogonType=Interactive`, action `powershell.exe -WindowStyle Hidden -File Start-Bridge.ps1` → launches the console-subsystem `.exe`) so it would run in the background at boot. In practice a console window kept appearing, and the process only started once someone actually logged on interactively.
+- **Root cause:** `-WindowStyle Hidden` only hides the PowerShell host's own window; a console-subsystem child process launched from it is not guaranteed to stay attached/hidden (flaky in practice on Windows 11/Windows Terminal). And an "at logon" trigger inherently depends on an interactive session existing at all.
+- **Fix:** host the app with ASP.NET Core's `Microsoft.Extensions.Hosting.WindowsServices` package (`builder.Host.UseWindowsService(o => o.ServiceName = "...")`, a no-op outside the Service Control Manager so `dotnet run` is unaffected) and register it as a real Windows Service (`sc.exe create ... start= delayed-auto`). A service has no window ever, doesn't need anyone logged on, and gets SCM-managed crash-restart (`sc.exe failure ... actions= restart/...`) instead of a Scheduled Task's weaker restart semantics. Because a service doesn't inherit an interactive session's env vars, a secret previously set by the launcher script (`RECEIPT_BRIDGE_KEY`) had to move to a **machine-level** env var (`setx NAME value /M`) for the service process to see it.
+- **Rule:** for any "must always be running in the background, no user should ever see a window" host process on Windows, reach for `UseWindowsService()` + a real service from the start — don't try to make a Scheduled Task behave like one.
+
 ---
 
 ## What worked / keep doing
@@ -114,3 +122,4 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 5. New proxied hostname: un-proxy → issue cert → re-proxy. Root-only DDNS; CNAMEs follow.
 6. Wire the compose into the boot script (`--no-build`, so the image must pre-exist).
 7. Scrub + sensitive-info scan before every push; use placeholders for any domain/host/IP in docs.
+8. Any always-on headless host process → `UseWindowsService()` + a real Windows Service, not a Scheduled Task.
