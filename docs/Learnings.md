@@ -105,6 +105,17 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Fix:** host the app with ASP.NET Core's `Microsoft.Extensions.Hosting.WindowsServices` package (`builder.Host.UseWindowsService(o => o.ServiceName = "...")`, a no-op outside the Service Control Manager so `dotnet run` is unaffected) and register it as a real Windows Service (`sc.exe create ... start= delayed-auto`). A service has no window ever, doesn't need anyone logged on, and gets SCM-managed crash-restart (`sc.exe failure ... actions= restart/...`) instead of a Scheduled Task's weaker restart semantics. Because a service doesn't inherit an interactive session's env vars, a secret previously set by the launcher script (`RECEIPT_BRIDGE_KEY`) had to move to a **machine-level** env var (`setx NAME value /M`) for the service process to see it.
 - **Rule:** for any "must always be running in the background, no user should ever see a window" host process on Windows, reach for `UseWindowsService()` + a real service from the start — don't try to make a Scheduled Task behave like one.
 
+## 13. A bridge/tool default granted to *every* stage let a vision-only call go web-searching for 10 minutes
+
+- **What bit us:** two receipt uploads in a row hung for ~10 minutes and then failed with a 504 "claude CLI call timed out" — both at the `extract` stage, which is supposed to be a single vision read with no research involved.
+- **False lead ruled out first:** `tasklist` showed several long-running `claude.exe` processes (some 6-8 hours old) and it was tempting to blame "stuck/orphaned bridge processes that never got killed on timeout." Tracing each one's parent process (`Get-CimInstance Win32_Process ... | Select ParentProcessId,CommandLine`) showed they belonged to an unrelated always-on remote-control session and to the investigating CLI session itself — nothing to do with the bridge. The bridge's own child process was already gone, correctly killed after the prior timeout. **Lesson: don't blame "orphaned" processes from a bare `tasklist`/`Get-Process` listing — trace the parent chain and command line before concluding a process belongs to the thing you're debugging.**
+- **Root cause:** the bridge call for `ExtractReceiptAsync` (and `ClassifyAsync`/`AssessSeasonalityAsync`) didn't pass an explicit `allowedTools`, so it fell through to the bridge's `DefaultAllowedTools` (`"Read,WebSearch"`) plus `--max-turns 25`. A pure "read this photo and return JSON" task was therefore free to go chase `WebSearch` calls (e.g. trying to verify a retailer/product), each a real network round trip, easily consuming the whole 600s timeout. Only the price-check stage had correctly scoped itself to `allowedTools: ["WebSearch"]` explicitly; the others inherited a default meant for a different stage.
+- **Fix:** pass `allowedTools: ["Read"]` explicitly on every non-search stage (`extract`, `classify`, `seasonality`) instead of relying on the bridge's default tool list.
+- **Rules:**
+  - When a host-side bridge/gateway has a "default tools if the caller doesn't specify" fallback, treat that default as dangerous for *every* call site — audit each call and pass an explicit, minimal tool list rather than trusting the default matches what that particular call needs.
+  - "It's taking a long time" on an LLM-CLI-via-bridge task is a prompt/tool-permission question first, not a timeout-tuning question — raising the timeout would have let the same wasted web-search loop run even longer instead of failing fast.
+  - A stage that shouldn't need a given tool (web search, bash, write, …) should have that tool actively withheld, not merely "not need it" — an idle capability is still a capability the model can decide to use.
+
 ---
 
 ## What worked / keep doing
@@ -123,3 +134,4 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 6. Wire the compose into the boot script (`--no-build`, so the image must pre-exist).
 7. Scrub + sensitive-info scan before every push; use placeholders for any domain/host/IP in docs.
 8. Any always-on headless host process → `UseWindowsService()` + a real Windows Service, not a Scheduled Task.
+9. Every bridge/gateway call site passes its own explicit, minimal tool list — never rely on a shared "default tools" fallback.

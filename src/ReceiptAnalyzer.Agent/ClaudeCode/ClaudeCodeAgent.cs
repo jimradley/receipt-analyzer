@@ -50,9 +50,23 @@ public sealed class ClaudeCodeAgent : IAnalysisAgent
             if (!string.IsNullOrWhiteSpace(correctionHint))
                 prompt += "\n\nIMPORTANT: " + correctionHint;
 
-            var json = await RunAsync(prompt, tmpPath, "extract", ct);
-            return JsonSerializer.Deserialize<ReceiptExtraction>(json, JsonOptions)
-                ?? throw new InvalidOperationException("Bridge extraction response could not be parsed as ReceiptExtraction.");
+            try
+            {
+                var json = await RunAsync(prompt, tmpPath, "extract", ct, allowedTools: ["Read"]);
+                return JsonSerializer.Deserialize<ReceiptExtraction>(json, JsonOptions)
+                    ?? throw new InvalidOperationException("Bridge extraction response could not be parsed as ReceiptExtraction.");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or JsonException)
+            {
+                // Claude Code sometimes replies with prose (a caveat, refusal, or preamble) instead of
+                // pure JSON. This is the only extraction attempt with no fallback, so re-ask once with
+                // a blunt instruction before letting the job fail outright.
+                _logger.LogWarning(ex, "Extraction response was not valid JSON; retrying once with a stricter instruction.");
+                var retryPrompt = prompt + "\n\nIMPORTANT: Your entire response MUST be a single JSON object — no explanation, no apology, no markdown code fences, no text before or after the braces. Start your response with { and end with }.";
+                var retryJson = await RunAsync(retryPrompt, tmpPath, "extract", ct, allowedTools: ["Read"]);
+                return JsonSerializer.Deserialize<ReceiptExtraction>(retryJson, JsonOptions)
+                    ?? throw new InvalidOperationException("Bridge extraction response could not be parsed as ReceiptExtraction.");
+            }
         }
         finally
         {
@@ -97,7 +111,7 @@ public sealed class ClaudeCodeAgent : IAnalysisAgent
             - isOwnLabel, isAmerican, parentCompany, parentCountry, swapSuggestion: per the rules in the system prompt.
             """;
 
-        var json = await RunAsync(prompt, imagePath: null, "classify", ct);
+        var json = await RunAsync(prompt, imagePath: null, "classify", ct, allowedTools: ["Read"]);
         return JsonSerializer.Deserialize<ItemClassifications>(json, JsonOptions)
             ?? throw new InvalidOperationException("Bridge classification response could not be parsed.");
     }
@@ -201,7 +215,7 @@ public sealed class ClaudeCodeAgent : IAnalysisAgent
             - For always-imported items (bananas, avocados, etc.) set isInSeason=true and likelyOrigin to their typical country; ukSeasonMonths=null.
             """;
 
-        var json = await RunAsync(prompt, imagePath: null, "seasonality", ct);
+        var json = await RunAsync(prompt, imagePath: null, "seasonality", ct, allowedTools: ["Read"]);
         var parsed = JsonSerializer.Deserialize<SeasonalityRaw>(json, JsonOptions)
             ?? throw new InvalidOperationException("Cannot parse bridge seasonality JSON.");
 
@@ -280,7 +294,13 @@ public sealed class ClaudeCodeAgent : IAnalysisAgent
         var end = text.LastIndexOf('}');
         if (start >= 0 && end > start)
             return text[start..(end + 1)];
-        return text.Trim();
+
+        // No JSON object at all — Claude Code replied with prose (a refusal, caveat, or explanation)
+        // instead of the requested schema. Surface that text instead of handing it to the JSON
+        // deserializer, which only reports the unhelpful "'X' is an invalid start of a value."
+        var snippet = text.Trim();
+        if (snippet.Length > 400) snippet = snippet[..400] + "…";
+        throw new InvalidOperationException($"Claude Code response contained no JSON object: \"{snippet}\"");
     }
 
     private string LoadRules()
