@@ -116,6 +116,18 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
   - "It's taking a long time" on an LLM-CLI-via-bridge task is a prompt/tool-permission question first, not a timeout-tuning question — raising the timeout would have let the same wasted web-search loop run even longer instead of failing fast.
   - A stage that shouldn't need a given tool (web search, bash, write, …) should have that tool actively withheld, not merely "not need it" — an idle capability is still a capability the model can decide to use.
 
+## 14. A service worker that re-forwards an intercepted request breaks body-carrying uploads in an installed PWA
+
+- **What bit us:** uploading a receipt from the installed (home-screen) PWA failed instantly with `TypeError: Failed to fetch`. The page looked healthy first — no "connecting to the server" banner — because `GET /api/health` worked fine.
+- **False leads ruled out, in order:** the container was up and `GET /api/health` returned 200 both locally on `:10080` and publicly; the reverse proxy had no body-size limit anywhere near the app's 10 MB client / 15 MB server caps (global default was `2000m`) and its access log showed earlier `POST /api/analyses` calls succeeding with `202`; Kestrel had no explicit `MaxRequestBodySize` override below its 30 MB default. The decisive datapoint was that **the failing POST never appeared in the reverse-proxy access log at all** — proving the request died client-side rather than being rejected anywhere upstream. Confirming that first would have skipped every server-side check.
+- **Root cause:** the published service worker intercepted *every* request and handled `/api/*` with `event.respondWith(fetch(event.request))`. Re-forwarding an intercepted `Request` that carries a body — a multipart file upload — is unreliable in standalone/installed PWA mode and throws a bare network-level `TypeError` before any HTTP response exists. A bodyless GET passes through the same code path fine, which is exactly why the health check masked it.
+- **Fix:** don't intercept those requests at all. The `fetch` listener now returns early (without calling `respondWith`) for `/api/*`, so the browser handles them natively. Same net behaviour as before — API calls always hit the network — minus the fragile pass-through. The now-unreachable `/api/` branch inside `onFetch` was removed.
+- **Rules:**
+  - In a service worker, **"pass it through with `respondWith(fetch(event.request))`" is not a no-op** — for requests with a body it's an active risk. If you don't need to modify or cache a request, return early and let the browser do it.
+  - **A browser `TypeError: Failed to fetch` means no HTTP response ever existed.** Check whether the request reached the origin *before* investigating server config — an absent access-log entry localises the fault to the client in one step.
+  - Suspect the service worker whenever a bug reproduces in the **installed** PWA but not a normal browser tab, and don't let a passing bodyless health check stand in for "the API works."
+  - Any change to client assets must also bump the build-stamp comment in `service-worker.published.js` (see §12) or installed clients will never pick it up.
+
 ---
 
 ## What worked / keep doing
