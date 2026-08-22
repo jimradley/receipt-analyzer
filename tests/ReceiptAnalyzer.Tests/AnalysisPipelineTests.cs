@@ -411,5 +411,27 @@ public class AnalysisPipelineTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_dir, ReceiptAnalyzer.Reports.ReportLibrary.BuyElsewhereFile)));
         Assert.True(_agent.PriceCheckCalls > 0); // price-check still runs for the report...
         Assert.Empty(new PriceCacheStore(_dir).Load().Entries); // ...but nothing is written to the durable cache
+        Assert.Empty(new PurchaseHistoryStore(_dir, NullLogger<PurchaseHistoryStore>.Instance).Load().Records);
+    }
+
+    [Fact]
+    public async Task A_re_uploaded_receipt_is_detected_as_a_duplicate_and_not_double_counted()
+    {
+        // Same retailer/date/total, uploaded as two separate photos (distinct job ids, e.g. after a
+        // slow or uncertain first run) — JobStore's byte-hash idempotency can't catch this since the
+        // bytes genuinely differ, so the pipeline must detect it by content instead.
+        var (jobA, _) = _store.GetOrCreate(Img("receipt-a"), "image/jpeg");
+        await NewPipeline().ProcessAsync(jobA.Id, CancellationToken.None);
+        Assert.Equal(JobStatus.Completed, _store.Get(jobA.Id)!.Status);
+
+        var (jobB, _) = _store.GetOrCreate(Img("receipt-b"), "image/jpeg");
+        await NewPipeline().ProcessAsync(jobB.Id, CancellationToken.None);
+        var doneB = _store.Get(jobB.Id)!;
+
+        Assert.Equal(JobStatus.Completed, doneB.Status); // still completes — never hard-fails
+        Assert.Contains("duplicate", doneB.Markdown, StringComparison.OrdinalIgnoreCase);
+
+        var history = new PurchaseHistoryStore(_dir, NullLogger<PurchaseHistoryStore>.Instance).Load();
+        Assert.Equal(3, history.Records.Count); // job A's 3 items only — job B not appended
     }
 }

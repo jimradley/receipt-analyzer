@@ -103,12 +103,6 @@ public class ReportRendererTests
     }
 
     [Fact]
-    public void Never_recommends_tesco()
-    {
-        Assert.DoesNotContain("Tesco", Report);
-    }
-
-    [Fact]
     public void Renders_seasonality_origin_for_imported_produce()
     {
         Assert.Contains("Bananas Loose (Costa Rica)", Report);
@@ -126,6 +120,27 @@ public class ReportRendererTests
     public void Reconciling_receipt_has_no_reshoot_guidance()
     {
         Assert.DoesNotContain("This read looks unreliable", Report);
+    }
+
+    [Fact]
+    public void No_booze_total_shown_when_receipt_has_no_alcohol()
+    {
+        Assert.DoesNotContain("Booze", Report); // sample receipt has no alcohol items
+    }
+
+    [Fact]
+    public void Booze_total_sums_alcohol_line_totals_in_the_header()
+    {
+        var sample = TestData.SampleResult();
+        var items = new List<ReceiptAnalyzer.Agent.RawItem>(sample.Extraction.Items)
+        {
+            new("Yellow Tail Shiraz", 1m, 8.50m, 8.50m),
+            new("Aspall Cider 4pk", 1m, 4.00m, 4.00m),
+        };
+        var ext = sample.Extraction with { Items = items };
+        var report = ReportRenderer.Render(sample with { Extraction = ext });
+
+        Assert.Contains("🍷 Booze: £12.50", report);
     }
 
     [Fact]

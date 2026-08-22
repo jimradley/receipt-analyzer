@@ -132,5 +132,9 @@ public sealed record AnalysisResult(
     DateTimeOffset GeneratedAt,
     IReadOnlyList<StageUsage>? Usage = null,
     decimal? EstimatedCostGbp = null,
-    IReadOnlyList<PersonalPriceComparison>? PersonalPrices = null
+    IReadOnlyList<PersonalPriceComparison>? PersonalPrices = null,
+    // Set when this receipt's retailer/date/total match an already-recorded receipt from a
+    // different job — almost certainly the same physical receipt re-uploaded. Ledger merge and
+    // purchase-history append are skipped for this job to avoid double-counting spend.
+    string? DuplicateOfSource = null
 );

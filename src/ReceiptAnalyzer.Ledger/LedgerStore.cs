@@ -112,6 +112,55 @@ public sealed class LedgerStore
         return new LedgerMergeResult(added.Count, updated, added);
     }
 
+    /// <summary>
+    /// Applies refreshed prices to <paramref name="staleEntries"/> (positionally paired with
+    /// <paramref name="items"/> — both ordered the same way the refresher built its price-check
+    /// request). An item whose refreshed saving drops below the same £0.30 threshold <see cref="Merge"/>
+    /// requires for admission is removed from <c>BuyElsewhere</c> rather than kept with a stale/negative
+    /// saving; a "not found" result just bumps <see cref="BuyElsewhereEntry.LastSeen"/> so it isn't
+    /// re-checked every cycle; an "unchecked" (failed call) result is left untouched entirely so it's
+    /// retried on the next refresh.
+    /// </summary>
+    public int ApplyPriceRefresh(
+        LedgerData ledger, IReadOnlyList<BuyElsewhereEntry> staleEntries, IReadOnlyList<PriceCheckItem> items, string today)
+    {
+        var refreshed = 0;
+        for (var i = 0; i < staleEntries.Count && i < items.Count; i++)
+        {
+            var entry = staleEntries[i];
+            var pc = items[i];
+            if (pc.Outcome == PriceCheckOutcome.Unchecked) continue;
+
+            var idx = ledger.BuyElsewhere.FindIndex(b => b.Key == entry.Key);
+            if (idx < 0) continue; // entry was removed/changed since Load()
+
+            if (pc.BestPrice is not { } bestPrice)
+            {
+                ledger.BuyElsewhere[idx] = ledger.BuyElsewhere[idx] with { LastSeen = today };
+                continue;
+            }
+
+            var saving = entry.PricePaid - bestPrice;
+            if (saving < 0.30m)
+            {
+                ledger.BuyElsewhere.RemoveAt(idx);
+                continue;
+            }
+
+            ledger.BuyElsewhere[idx] = ledger.BuyElsewhere[idx] with
+            {
+                BestPrice = bestPrice,
+                Where = pc.BestPriceStore ?? entry.Where,
+                Saving = saving,
+                LastSeen = today,
+                LatestBestPrice = bestPrice,
+                LatestBestPriceStore = pc.BestPriceStore
+            };
+            refreshed++;
+        }
+        return refreshed;
+    }
+
     public void Save(LedgerData ledger)
     {
         lock (_gate)

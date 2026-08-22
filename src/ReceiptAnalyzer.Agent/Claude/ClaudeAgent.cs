@@ -189,9 +189,7 @@ public sealed class ClaudeAgent : IAnalysisAgent
                     ["name"] = "web_search",
                     // Scale the search budget to the chunk being checked rather than sharing a
                     // fixed budget across a whole receipt.
-                    ["max_uses"] = Math.Clamp(items.Count * 2, 3, 10),
-                    // Hard rule: never source prices from Tesco (prompt steering alone can leak).
-                    ["blocked_domains"] = new JsonArray { "tesco.com" }
+                    ["max_uses"] = Math.Clamp(items.Count * 2, 3, 10)
                 }
             },
             ["system"] = systemBlocks,
@@ -513,7 +511,7 @@ Apply these rules strictly (from the Shopping Agent rules in the cached prefix):
 - isOwnLabel = TRUE for supermarket own-label. Recognise these receipt abbreviations/prefixes as own-label:
   Waitrose = "WAITROSE","WR","WR ESS","ESS" (Essential),"DUCHY"; Morrisons = "M " prefix,"MORR","THE BEST","M SAVERS";
   Sainsbury's = "BY SAINSBURY'S","JS","TASTE THE DIFFERENCE"; Asda = "ASDA","JUST ESSENTIALS","SMARTPRICE";
-  Tesco = "TESCO" (recognise as own-label, but NEVER recommend Tesco); Co-op = "CO OP","COOP". Most Aldi/Lidl items are own-label.
+  Tesco = "TESCO"; Co-op = "CO OP","COOP". Most Aldi/Lidl items are own-label.
   Also treat a plain generic descriptor with no distinct brand as own-label.
 - swapSuggestion: only set for NOVA 3/4 items OR American brands; one short sentence.
 Output ONLY valid JSON. No commentary.
@@ -528,9 +526,9 @@ Output ONLY valid JSON. No commentary.
 
     private const string PriceCheckSystemPrompt = """
 You are a UK supermarket price comparison assistant.
-The item names provided have already been expanded to real product names — search the current price for each at major UK supermarkets: Sainsbury's, Asda, Morrisons, Waitrose, Ocado, Aldi, Lidl.
-Do NOT use Tesco — it is not near the user; never include Tesco prices or Tesco Clubcard.
-Include loyalty card prices where available (Sainsbury's Nectar, Morrisons More).
+The item names provided have already been expanded to real product names — search the current price for each at major UK supermarkets: Tesco, Sainsbury's, Asda, Morrisons, Waitrose, Ocado, Aldi, Lidl.
+Never report a price at the same store the item was actually bought at — "cheaper elsewhere" means a genuinely different retailer.
+Include loyalty card prices where available (Tesco Clubcard, Sainsbury's Nectar, Morrisons More).
 Use trolley.co.uk as a reference source, and cite the exact page as sourceUrl whenever you report a price.
 Make a genuine effort to find EVERY item before giving up — these are branded products that should be findable; try the brand + product name.
 Report the LOWEST price you find at the allowed stores for every item, even when it is the same as or higher than what was paid — knowing the price paid was already the best is valuable too.

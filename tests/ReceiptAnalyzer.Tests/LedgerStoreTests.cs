@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using ReceiptAnalyzer.Agent;
 using ReceiptAnalyzer.Ledger;
 
 namespace ReceiptAnalyzer.Tests;
@@ -64,7 +65,7 @@ public class LedgerStoreTests : IDisposable
     }
 
     [Fact]
-    public void ReRenderMarkdown_writes_both_ledger_files_without_tesco()
+    public void ReRenderMarkdown_writes_both_ledger_files()
     {
         var store = NewStore();
         var ledger = store.Load();
@@ -76,7 +77,71 @@ public class LedgerStoreTests : IDisposable
 
         Assert.Contains("Maltesers 100g", buyElsewhere);
         Assert.Contains("Maltesers 100g", alternatives);
-        Assert.DoesNotContain("Tesco", buyElsewhere);
-        Assert.DoesNotContain("Tesco", alternatives);
+    }
+
+    [Fact]
+    public void ApplyPriceRefresh_overwrites_resolved_items()
+    {
+        var store = NewStore();
+        var ledger = store.Load();
+        store.Merge(ledger, TestData.SampleResult(), today: "2026-06-23");
+        var stale = new List<BuyElsewhereEntry> { ledger.BuyElsewhere[0] }; // Maltesers, paid 1.50, was best 1.00 at Asda
+
+        var items = new List<PriceCheckItem>
+        {
+            new(0, stale[0].Item, stale[0].PricePaid, stale[0].StorePaid,
+                BestPrice: 0.80m, BestPriceStore: "Aldi", Saving: stale[0].PricePaid - 0.80m, Notes: null,
+                Outcome: PriceCheckOutcome.CheaperElsewhere)
+        };
+
+        var refreshed = store.ApplyPriceRefresh(ledger, stale, items, today: "2026-06-26");
+
+        Assert.Equal(1, refreshed);
+        Assert.Equal(0.80m, ledger.BuyElsewhere[0].BestPrice);
+        Assert.Equal("Aldi", ledger.BuyElsewhere[0].Where);
+        Assert.Equal("2026-06-26", ledger.BuyElsewhere[0].LastSeen);
+    }
+
+    [Fact]
+    public void ApplyPriceRefresh_drops_entry_when_saving_falls_below_threshold()
+    {
+        var store = NewStore();
+        var ledger = store.Load();
+        store.Merge(ledger, TestData.SampleResult(), today: "2026-06-23");
+        var stale = new List<BuyElsewhereEntry> { ledger.BuyElsewhere[0] };
+
+        // Price at the paying store rose since — best price now barely beats what was paid.
+        var items = new List<PriceCheckItem>
+        {
+            new(0, stale[0].Item, stale[0].PricePaid, stale[0].StorePaid,
+                BestPrice: stale[0].PricePaid - 0.10m, BestPriceStore: "Aldi",
+                Saving: 0.10m, Notes: null, Outcome: PriceCheckOutcome.CheaperElsewhere)
+        };
+
+        store.ApplyPriceRefresh(ledger, stale, items, today: "2026-06-26");
+
+        Assert.Empty(ledger.BuyElsewhere);
+    }
+
+    [Fact]
+    public void ApplyPriceRefresh_leaves_unchecked_items_untouched()
+    {
+        var store = NewStore();
+        var ledger = store.Load();
+        store.Merge(ledger, TestData.SampleResult(), today: "2026-06-23");
+        var stale = new List<BuyElsewhereEntry> { ledger.BuyElsewhere[0] };
+        var original = ledger.BuyElsewhere[0];
+
+        var items = new List<PriceCheckItem>
+        {
+            new(0, stale[0].Item, stale[0].PricePaid, stale[0].StorePaid,
+                BestPrice: null, BestPriceStore: null, Saving: null, Notes: "call failed",
+                Outcome: PriceCheckOutcome.Unchecked)
+        };
+
+        var refreshed = store.ApplyPriceRefresh(ledger, stale, items, today: "2026-06-26");
+
+        Assert.Equal(0, refreshed);
+        Assert.Equal(original, ledger.BuyElsewhere[0]);
     }
 }

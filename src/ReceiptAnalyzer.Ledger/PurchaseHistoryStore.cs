@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using ReceiptAnalyzer.Agent;
 using ReceiptAnalyzer.Ledger.Parsers;
@@ -18,6 +19,12 @@ public sealed class PurchaseHistoryStore
     private static readonly string[] FilenameDateFormats = { "dd-MMMM-yy", "d-MMMM-yy" };
     private static readonly HashSet<string> LedgerFiles =
         new(StringComparer.OrdinalIgnoreCase) { "buy-elsewhere.md", "alternatives.md" };
+
+    // Mirrors ReportLibrary.IsPipelineReportFileName: only ever back-fill from files the app's own
+    // pipeline wrote ("{dd-MMMM-yy}-{retailer}-{8 hex}.md"), so a stray non-pipeline report dropped
+    // into the shared output folder can't silently duplicate items into purchase history.
+    private static readonly Regex PipelineReportFileName =
+        new(@"^\d{2}-[A-Za-z]+-\d{2}-.+-[0-9a-f]{8}\.md$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -48,6 +55,28 @@ public sealed class PurchaseHistoryStore
 
         _logger.LogInformation("purchase-history.json not found — back-filling from existing reports.");
         return Migrate();
+        }
+    }
+
+    /// <summary>
+    /// Returns the source (a job id, or "backfill:{file}") of an existing receipt already recorded
+    /// for the same retailer and date whose item total is within 50p of <paramref name="total"/> —
+    /// i.e. the same physical receipt processed as a different job — or null if none matches.
+    /// Retailer is compared on the part before any trailing "(branch)" annotation, case-insensitively,
+    /// since OCR sometimes captures a store's branch differently between reads of the same receipt.
+    /// </summary>
+    public string? FindLikelyDuplicateSource(string retailer, DateOnly date, decimal total, string excludeSource)
+    {
+        var retailerKey = retailer.Split('(')[0].Trim();
+        lock (_gate)
+        {
+            return Load().Records
+                .Where(r => r.Source != excludeSource && r.Date == date &&
+                            string.Equals(r.Retailer.Split('(')[0].Trim(), retailerKey, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(r => r.Source)
+                .Select(g => new { Source = g.Key, Total = g.Sum(r => r.UnitPrice * r.Quantity) })
+                .FirstOrDefault(g => Math.Abs(g.Total - total) <= 0.50m)
+                ?.Source;
         }
     }
 
@@ -100,7 +129,7 @@ public sealed class PurchaseHistoryStore
         foreach (var file in Directory.EnumerateFiles(_outputDir, "*.md", SearchOption.TopDirectoryOnly))
         {
             var name = Path.GetFileName(file);
-            if (LedgerFiles.Contains(name)) continue;
+            if (LedgerFiles.Contains(name) || !PipelineReportFileName.IsMatch(name)) continue;
 
             var fallbackDate = ParseFilenameDate(Path.GetFileNameWithoutExtension(file));
             ParsedReceipt? parsed;

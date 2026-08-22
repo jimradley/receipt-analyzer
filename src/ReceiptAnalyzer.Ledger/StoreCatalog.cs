@@ -5,21 +5,22 @@ namespace ReceiptAnalyzer.Ledger;
 /// <summary>
 /// The user's allowed grocery stores and the canonicalisation of the free-text store names that
 /// appear in the ledger "Where" column and the Wine project's retailer cells. Anything outside the
-/// allowed set — notably Tesco (never recommend; not near the user), plus M&S / Majestic / Co-op —
-/// maps to <c>null</c> and is dropped from the per-store shopping list.
+/// allowed set — M&S / Majestic / Co-op — maps to <c>null</c> and is dropped from the per-store
+/// shopping list.
 /// </summary>
 public static class StoreCatalog
 {
     /// <summary>Canonical allowed store names, in a sensible display order.</summary>
     public static readonly IReadOnlyList<string> Allowed = new[]
     {
-        "Asda", "Sainsbury's", "Morrisons", "Waitrose", "Ocado", "Aldi", "Lidl", "B&M", "Poundland"
+        "Tesco", "Asda", "Sainsbury's", "Morrisons", "Waitrose", "Ocado", "Aldi", "Lidl", "B&M", "Poundland"
     };
 
     // Lower-cased aliases → canonical name. Only allowed stores appear here; unknown/forbidden
-    // names (tesco, m&s, majestic, co-op, …) deliberately have no entry, so Canonical returns null.
+    // names (m&s, majestic, co-op, …) deliberately have no entry, so Canonical returns null.
     private static readonly Dictionary<string, string> Aliases = new(StringComparer.OrdinalIgnoreCase)
     {
+        ["tesco"] = "Tesco",
         ["asda"] = "Asda",
         ["sainsbury's"] = "Sainsbury's", ["sainsburys"] = "Sainsbury's", ["sainsbury"] = "Sainsbury's",
         ["morrisons"] = "Morrisons", ["morrison's"] = "Morrisons",
@@ -45,7 +46,7 @@ public static class StoreCatalog
 
     /// <summary>
     /// All allowed canonical stores mentioned in a free-text cell. Handles multi-store cells such as
-    /// "Morrisons / Ocado", "Asda / B&M" and "Tesco / Asda" (Tesco dropped), plus per-store annotations.
+    /// "Morrisons / Ocado", "Asda / B&M" and "Co-op / Asda" (Co-op dropped), plus per-store annotations.
     /// </summary>
     public static IReadOnlyList<string> ExtractAllowed(string? cell)
     {

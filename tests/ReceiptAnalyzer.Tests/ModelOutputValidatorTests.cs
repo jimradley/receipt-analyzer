@@ -104,7 +104,7 @@ public class ModelOutputValidatorTests
     }
 
     [Fact]
-    public void Price_repair_downgrades_a_same_store_same_price_no_source_result_to_unchecked()
+    public void Price_repair_drops_a_same_store_same_price_no_source_result()
     {
         // The "every row £0.00 saving at Morrisons" fabrication failure mode: the model claims a
         // "best price" identical to what was paid, at the receipt's own retailer, with no source.
@@ -114,39 +114,46 @@ public class ModelOutputValidatorTests
 
         var item = Assert.Single(ModelOutputValidator.Repair(requested, raw).Items);
 
-        Assert.Equal(PriceCheckOutcome.Unchecked, item.Outcome);
+        Assert.Equal(PriceCheckOutcome.NotFound, item.Outcome);
         Assert.Null(item.BestPrice);
         Assert.Null(item.BestPriceStore);
         Assert.Null(item.Saving);
     }
 
     [Fact]
-    public void Price_repair_keeps_a_same_store_same_price_result_when_a_source_url_is_present()
+    public void Price_repair_drops_a_same_store_result_even_with_a_real_source_url()
     {
-        // A real search that genuinely confirms the receipt price is the best is legitimate — the
-        // fabrication guard should only bite when there's no evidence of an actual search.
-        var requested = new[] { new BrandedItemForCheck(0, "KTC Chick Peas", 0.52m, "Morrisons") };
+        // "Cheaper elsewhere" must mean a different store than the one bought at — even a genuine
+        // search hit (real sourceUrl, a real different price, e.g. a stale/promo price) is not a
+        // useful recommendation when it names the receipt's own retailer. Reproduces the real-world
+        // case: a Morrisons receipt item coming back "cheaper at Morrisons".
+        var requested = new[] { new BrandedItemForCheck(0, "Yellow Tail Shiraz", 8.50m, "Morrisons") };
         var raw = new PriceCheckResult(
-            [new(0, "KTC Chick Peas", 0.52m, "Morrisons", 0.52m, "Morrisons", null, null, SourceUrl: "https://www.morrisons.com/p/123")], null);
+            [new(0, "Yellow Tail Shiraz", 8.50m, "Morrisons", 8.25m, "Morrisons", null, null,
+                SourceUrl: "https://www.morrisons.com/p/yellow-tail-shiraz")], null);
 
         var item = Assert.Single(ModelOutputValidator.Repair(requested, raw).Items);
 
-        Assert.Equal(PriceCheckOutcome.AlreadyBest, item.Outcome);
-        Assert.Equal(0.52m, item.BestPrice);
+        Assert.Equal(PriceCheckOutcome.NotFound, item.Outcome);
+        Assert.Null(item.BestPrice);
+        Assert.Null(item.BestPriceStore);
+        Assert.Null(item.Saving);
     }
 
     [Fact]
-    public void Price_repair_never_reports_a_tesco_price()
+    public void Price_repair_now_allows_a_tesco_price_at_a_different_store()
     {
+        // Tesco was previously hard-excluded; it's now an allowed comparison/recommendation store
+        // like any other, so a genuinely cheaper Tesco price at a different retailer is kept.
         var requested = new[] { new BrandedItemForCheck(0, "Maltesers 100g", 1.50m, "Morrisons") };
         var raw = new PriceCheckResult(
             [new(0, "Maltesers 100g", 1.50m, "Morrisons", 1.00m, "Tesco", null, null, SourceUrl: "https://www.tesco.com/x")], null);
 
         var item = Assert.Single(ModelOutputValidator.Repair(requested, raw).Items);
 
-        Assert.Null(item.BestPrice);
-        Assert.Null(item.BestPriceStore);
-        Assert.Equal(PriceCheckOutcome.NotFound, item.Outcome);
+        Assert.Equal(1.00m, item.BestPrice);
+        Assert.Equal("Tesco", item.BestPriceStore);
+        Assert.Equal(PriceCheckOutcome.CheaperElsewhere, item.Outcome);
     }
 
     [Fact]

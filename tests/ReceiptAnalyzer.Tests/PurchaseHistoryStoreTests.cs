@@ -119,8 +119,8 @@ public class PurchaseHistoryStoreTests : IDisposable
     [Fact]
     public void Load_backfills_from_reports_and_skips_ledger_files()
     {
-        File.WriteAllText(Path.Combine(_dir, "26-June-26.md"), Report("Asda", "26 June 2026", ("Milk", "£1.45"), ("Bread", "£0.95")));
-        File.WriteAllText(Path.Combine(_dir, "19-June-26.md"), Report("Lidl", "19 June 2026", ("Milk", "£1.39")));
+        File.WriteAllText(Path.Combine(_dir, "26-June-26-Asda-a1b2c3d4.md"), Report("Asda", "26 June 2026", ("Milk", "£1.45"), ("Bread", "£0.95")));
+        File.WriteAllText(Path.Combine(_dir, "19-June-26-Lidl-e5f6a7b8.md"), Report("Lidl", "19 June 2026", ("Milk", "£1.39")));
         File.WriteAllText(Path.Combine(_dir, "buy-elsewhere.md"), "| Item | Store Paid | Price Paid |\n|---|---|---|\n| X | Asda | £1.00 |");
 
         var records = NewStore().Load().Records;
@@ -132,15 +132,29 @@ public class PurchaseHistoryStoreTests : IDisposable
     }
 
     [Fact]
+    public void Load_backfill_ignores_files_not_written_by_the_pipeline()
+    {
+        // A stray non-pipeline report (e.g. an old manual-format file with no retailer/job-id
+        // suffix) must never get back-filled into purchase history.
+        File.WriteAllText(Path.Combine(_dir, "26-June-26.md"), Report("Asda", "26 June 2026", ("Milk", "£1.45")));
+        File.WriteAllText(Path.Combine(_dir, "26-June-26-Asda-a1b2c3d4.md"), Report("Asda", "26 June 2026", ("Bread", "£0.95")));
+
+        var records = NewStore().Load().Records;
+
+        var record = Assert.Single(records);
+        Assert.Equal("bread", record.Key);
+    }
+
+    [Fact]
     public void Backfill_runs_once_then_load_reads_json()
     {
-        File.WriteAllText(Path.Combine(_dir, "26-June-26.md"), Report("Asda", "26 June 2026", ("Milk", "£1.45")));
+        File.WriteAllText(Path.Combine(_dir, "26-June-26-Asda-a1b2c3d4.md"), Report("Asda", "26 June 2026", ("Milk", "£1.45")));
 
         var first = NewStore().Load();
         Assert.Single(first.Records);
 
         // Deleting the report must not change a subsequent load — it now reads the persisted json.
-        File.Delete(Path.Combine(_dir, "26-June-26.md"));
+        File.Delete(Path.Combine(_dir, "26-June-26-Asda-a1b2c3d4.md"));
         Assert.Single(NewStore().Load().Records);
     }
 

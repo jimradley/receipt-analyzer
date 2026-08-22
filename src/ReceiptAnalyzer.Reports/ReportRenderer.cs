@@ -29,6 +29,9 @@ public static class ReportRenderer
             else if (ext.Savings is { } && ext.Savings > 0)
                 sb.Append(')');
         }
+        var boozeTotal = ext.Items.Where(it => AlcoholNovaGuard.IsAlcohol(it.Name)).Sum(it => it.LineTotal);
+        if (boozeTotal > 0)
+            sb.Append($" | 🍷 Booze: £{boozeTotal:F2}");
         sb.AppendLine();
         sb.AppendLine();
 
@@ -39,6 +42,8 @@ public static class ReportRenderer
         // the read can't be trusted, so give actionable advice rather than presenting garbled items as fact.
         if (math.Reconciles == false && IsLargeMismatch(math))
             sb.AppendLine("> ⚠️ **This read looks unreliable** — the photo may contain more than one receipt, be rotated, or be too creased/blurry to read. For an accurate result, re-shoot **one receipt at a time, upright and flattened**.");
+        if (result.DuplicateOfSource is not null)
+            sb.AppendLine("> ⚠️ **This looks like a duplicate** — a receipt for this retailer, date, and total is already recorded. Ledger and spend history were **not** updated for this run, to avoid double-counting. If this genuinely is a separate trip, let me know and I'll add it manually.");
         sb.AppendLine();
 
         sb.AppendLine("### Items");

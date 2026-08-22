@@ -105,6 +105,21 @@ public sealed class AnalysisPipeline
                     "Job {Id}: large unreconciled mismatch ({Summary}) — suppressing ledger merge and price-cache writes.",
                     id, finalMath.Summary);
 
+            // A receipt re-uploaded as a fresh photo (e.g. after a slow/uncertain run) hashes to a
+            // different job id, so JobStore's byte-hash idempotency can't catch it — it would otherwise
+            // silently double (or triple) count spend in purchase history. Detect it by content instead:
+            // same retailer + date + item total, from a different job.
+            var receiptDate = ext.ReceiptDate ?? DateOnly.FromDateTime(london);
+            var receiptTotal = ext.Items.Sum(i => i.UnitPrice * i.Quantity);
+            var duplicateOfSource = _history.FindLikelyDuplicateSource(ext.Retailer, receiptDate, receiptTotal, excludeSource: job.Id);
+            if (duplicateOfSource is not null)
+            {
+                suppressDurableWrites = true;
+                _logger.LogWarning(
+                    "Job {Id}: looks like a duplicate of an already-recorded {Retailer} receipt on {Date} (source {Source}) — suppressing ledger merge and purchase-history append.",
+                    id, ext.Retailer, receiptDate, duplicateOfSource);
+            }
+
             // 3. Price check (branded, non-own-label items) — served from the price cache where fresh,
             //    so only cache-misses incur a web search.
             if (!job.PriceChecksDone)
@@ -169,19 +184,17 @@ public sealed class AnalysisPipeline
             // Compare against YOUR OWN past prices (distinct from the market price-check above). Computed
             // before the append below and excluding this job, so a shop is never compared against itself.
             var personalPrices = PersonalPriceHistoryBuilder.Build(
-                _history.Load(), ext.Items, ext.Retailer,
-                ext.ReceiptDate ?? DateOnly.FromDateTime(london), job.Id);
+                _history.Load(), ext.Items, ext.Retailer, receiptDate, job.Id);
 
             var result = new AnalysisResult(ext, job.Classifications!, job.PriceChecks, job.Seasonality,
-                job.CreatedAt, job.TokenUsage, job.EstimatedCostGbp, personalPrices);
+                job.CreatedAt, job.TokenUsage, job.EstimatedCostGbp, personalPrices, duplicateOfSource);
             var markdown = ReportRenderer.Render(result);
 
             Directory.CreateDirectory(_outputDir);
-            var reportDate = ext.ReceiptDate ?? DateOnly.FromDateTime(london);
             var safeRetailer = PathSanitizer.SanitizeFolderName(ext.Retailer);
             var shortId = job.Id.Length >= 8 ? job.Id[..8] : job.Id;
             var fullPath = PathSanitizer.EnsureSafePath(
-                _outputDir, $"{reportDate:dd-MMMM-yy}-{safeRetailer}-{shortId}.md");
+                _outputDir, $"{receiptDate:dd-MMMM-yy}-{safeRetailer}-{shortId}.md");
             persistenceStarted = true;
             await WriteAtomicAsync(fullPath, markdown, ct);
 
@@ -195,9 +208,10 @@ public sealed class AnalysisPipeline
 
             // Durable purchase history for replenishment + longitudinal habit flags — keyed by job id so a
             // re-run replaces, not doubles. Classifications carry NOVA / US-ownership forward per item.
-            _history.AppendReceipt(
-                job.Id, ext.Retailer, ext.ReceiptDate ?? DateOnly.FromDateTime(london), ext.Items,
-                job.Classifications!.Items);
+            // Skipped alongside the ledger merge above when this is a detected duplicate, so a
+            // re-uploaded receipt can never double-count spend.
+            if (!suppressDurableWrites)
+                _history.AppendReceipt(job.Id, ext.Retailer, receiptDate, ext.Items, job.Classifications!.Items);
 
             job.Markdown = markdown;
             job.ReportPath = fullPath;
@@ -206,7 +220,7 @@ public sealed class AnalysisPipeline
             job.ItemCount = ext.Items.Count;
             // Archive a durable copy of the receipt image before the working image is pruned, so
             // receipts can be browsed and reprocessed later (the working copy below is deleted).
-            job.ReceiptImagePath = ArchiveReceiptImage(image, ext.Retailer, reportDate, job.Id, job.MediaType);
+            job.ReceiptImagePath = ArchiveReceiptImage(image, ext.Retailer, receiptDate, job.Id, job.MediaType);
 
             // Durable cost record is part of the idempotent commit. If any persistence step fails,
             // the job remains resumable and repeats these keyed upserts rather than becoming terminal.

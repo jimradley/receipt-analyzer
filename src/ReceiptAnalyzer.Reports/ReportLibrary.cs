@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace ReceiptAnalyzer.Reports;
 
 public sealed record ReportSummary(string Name, DateTimeOffset Modified);
@@ -15,6 +17,15 @@ public sealed class ReportLibrary
     private static readonly HashSet<string> LedgerFiles =
         new(StringComparer.OrdinalIgnoreCase) { BuyElsewhereFile, AlternativesFile };
 
+    // Matches only the filenames AnalysisPipeline itself writes: "{dd-MMMM-yy}-{retailer}-{8 hex}.md"
+    // (e.g. "22-August-26-Morrisons-f6290826.md"). Anything else in the output folder — a stray file
+    // dropped there by something outside this app — is never treated as a real analysis, so it can't
+    // masquerade as a duplicate app run in History or get back-filled into purchase history.
+    private static readonly Regex PipelineReportFileName =
+        new(@"^\d{2}-[A-Za-z]+-\d{2}-.+-[0-9a-f]{8}\.md$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    public static bool IsPipelineReportFileName(string fileName) => PipelineReportFileName.IsMatch(fileName);
+
     private readonly string _dir;
 
     public ReportLibrary(string outputDir) => _dir = outputDir;
@@ -26,14 +37,16 @@ public sealed class ReportLibrary
 
         return new DirectoryInfo(_dir)
             .EnumerateFiles("*.md", SearchOption.TopDirectoryOnly)
-            .Where(f => !LedgerFiles.Contains(f.Name))
+            .Where(f => !LedgerFiles.Contains(f.Name) && IsPipelineReportFileName(f.Name))
             .OrderByDescending(f => f.LastWriteTimeUtc)
             .Select(f => new ReportSummary(f.Name, new DateTimeOffset(f.LastWriteTimeUtc, TimeSpan.Zero)))
             .ToList();
     }
 
-    /// <summary>Markdown of a single report by filename, or null if it is missing or the name is unsafe.</summary>
-    public string? ReadReport(string name) => ReadSafe(name, allowLedgers: false);
+    /// <summary>Markdown of a single report by filename, or null if it is missing, unsafe, or not a
+    /// report the pipeline itself wrote.</summary>
+    public string? ReadReport(string name) =>
+        IsPipelineReportFileName(name) ? ReadSafe(name, allowLedgers: false) : null;
 
     /// <summary>Markdown of one of the two ledgers ("buy-elsewhere" / "alternatives" or their filenames).</summary>
     public string? ReadLedger(string which)

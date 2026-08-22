@@ -107,9 +107,12 @@ public static class ModelOutputValidator
             var bestStore = best is null ? null : Clean(x.BestPriceStore);
             var sourceUrl = Clean(x.SourceUrl);
 
-            // Hard rule: never recommend Tesco, even if the model (or an unblocked search) surfaces
-            // it — treat it the same as not having found a price at all.
-            if (bestStore is not null && bestStore.Contains("tesco", StringComparison.OrdinalIgnoreCase))
+            // Hard rule: "cheaper elsewhere" must mean a different store than the one the item was
+            // actually bought at. A same-store result — even a real search hit, e.g. a stale or
+            // promotional price — isn't a useful recommendation, so drop it the same way a
+            // never-allowed store would be (falls through to NotFound and gets retried).
+            if (bestStore is not null &&
+                StoreCatalog.Canonical(bestStore) is { } bs && bs == StoreCatalog.Canonical(request.Retailer))
             {
                 best = null;
                 bestStore = null;
@@ -119,22 +122,6 @@ public static class ModelOutputValidator
             var outcome = best is null
                 ? PriceCheckOutcome.NotFound
                 : saving > 0 ? PriceCheckOutcome.CheaperElsewhere : PriceCheckOutcome.AlreadyBest;
-
-            // Fabrication guard: a "best price" that exactly equals what was paid, at the receipt's
-            // own retailer, with no supporting source URL, looks like the model echoing the input
-            // back rather than performing a real search (the "every row £0.00 saving" failure mode).
-            // Downgrade to unchecked so it's retried, rather than cached as a confident "already best".
-            if (best == request.PricePaid && sourceUrl is null)
-            {
-                var retailerCanonical = StoreCatalog.Canonical(request.Retailer);
-                if (retailerCanonical is not null && retailerCanonical == StoreCatalog.Canonical(bestStore))
-                {
-                    best = null;
-                    bestStore = null;
-                    saving = null;
-                    outcome = PriceCheckOutcome.Unchecked;
-                }
-            }
 
             return x with
             {

@@ -10,7 +10,7 @@ public sealed record StoreShoppingList(
     IReadOnlyList<StoreGroceryItem> Groceries, IReadOnlyList<StoreWine> Wines);
 
 /// <summary>The per-store shopping list plus a count of buy-elsewhere items hidden because their only
-/// cheaper option is a store outside the allowed set (e.g. Tesco / Co-op).</summary>
+/// cheaper option is a store outside the allowed set (e.g. Co-op / M&S).</summary>
 public sealed record ShoppingListResult(IReadOnlyList<StoreShoppingList> Stores, int HiddenGroceryItems);
 
 /// <summary>
