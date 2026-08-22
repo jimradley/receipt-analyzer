@@ -128,6 +128,24 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
   - Suspect the service worker whenever a bug reproduces in the **installed** PWA but not a normal browser tab, and don't let a passing bodyless health check stand in for "the API works."
   - Any change to client assets must also bump the build-stamp comment in `service-worker.published.js` (see §12) or installed clients will never pick it up.
 
+## 15. `sc.exe`'s console password prompt can silently corrupt a service account's credentials — even after every other cause is ruled out
+
+- **What bit us:** migrating the Bridge from a Scheduled Task to a real Windows Service (per §12), `sc.exe create ... obj= "<host>\<user>" password= *` reported success, but `sc.exe start` failed every time with **error 1069 — "The service did not start due to a logon failure."** Re-running `sc.exe config ... password= *` to re-enter the password also reported success and still failed to start.
+- **False leads ruled out, in order, each independently confirmed and each NOT the cause:**
+  - **Wrong account name format.** `sc.exe qc` showed `SERVICE_START_NAME : .\<user>` even after configuring `<host>\<user>` explicitly — this is expected Windows normalisation of the local computer name to `.`, not a misconfiguration. Not worth chasing.
+  - **Missing "Log on as a service" right.** Granted via `secpol.msc` → Local Policies → User Rights Assignment. Still 1069. Verified the grant actually took effect with `secedit /export /areas USER_RIGHTS /cfg C:\check.cfg` — but plain `findstr` against that file silently found nothing because the export is UTF-16; switching to PowerShell's `Select-String -Path C:\check.cfg -Pattern "ServiceLogonRight"` showed the right genuinely was granted (the account was listed under `SeServiceLogonRight`) with no competing `SeDenyServiceLogonRight` entry.
+  - **Wrong password.** Isolated this from everything else with `runas /user:<host>\<user> cmd` — it succeeded (a new shell opened), proving the password itself was correct outside the service-logon path.
+  - **Near-false-lead:** running `sc.exe start` *inside* that runas-opened window gave a different error, "OpenService FAILED 5: Access is denied." That's not a service problem — `runas` opens a **non-elevated** shell even for an admin account, so any `sc.exe` call there hits UAC regardless of the service's real state. Had to go back to the original elevated window to get a meaningful result (which was still 1069).
+- **Fix:** stopped using `sc.exe`'s console `password= *` prompt entirely and set the service's logon credentials via the **Services GUI** instead — `services.msc` → the service → Properties → **Log On** tab → This account → retype the password in both the Password and Confirm password fields → OK. The service started immediately on the next attempt with the exact same account and password. This strongly implies `sc.exe`'s console secure-input prompt was silently mis-capturing the password on every attempt when invoked from a PowerShell host — it always reports `SUCCESS` regardless, since `sc.exe config`/`create` never validates a password, only an actual start attempt does.
+- **Also:** this whole migration had to be handed to the user to run themselves — the agent session's own shell tools were not elevated, and `sc.exe create`, `[Environment]::SetEnvironmentVariable(...,'Machine')`, and even reliably killing the old process all failed or errored without admin rights.
+- **Rules:**
+  - `sc.exe create`/`config ... password= *` reporting `SUCCESS` proves the syntax was valid, **not** that the password was accepted — only a real start attempt validates it. Don't stop troubleshooting on that success.
+  - To isolate "is the password wrong" from "is something else wrong" for a 1069, use `runas /user:DOMAIN\user cmd` as an independent check — but remember it opens a **non-elevated** shell, so don't run further `sc.exe` diagnostics inside that window and mistake an Access-Denied-from-no-elevation for a service-specific error.
+  - `SERVICE_START_NAME : .\user` after configuring `HOSTNAME\user` is expected local-account normalisation — don't chase it as a bug.
+  - `findstr` against a `secedit /export` file can silently return nothing because the export is UTF-16; use PowerShell's `Select-String` instead when checking exported security policy for a specific right.
+  - If a service account's password, "Log on as a service" right, and account-name resolution are all independently verified correct and `sc.exe ... password= *` from a console still won't start the service, stop fighting the CLI prompt — set the credentials via **`services.msc`'s GUI Log On tab** instead, which uses a real dialog field rather than a console secure-input prompt.
+  - Windows service-account/credential setup is not something to attempt from an unelevated agent shell — hand it to the user as a script plus a clear step-by-step verification checklist, and expect to debug interactively over several rounds.
+
 ---
 
 ## What worked / keep doing
@@ -147,3 +165,4 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 7. Scrub + sensitive-info scan before every push; use placeholders for any domain/host/IP in docs.
 8. Any always-on headless host process → `UseWindowsService()` + a real Windows Service, not a Scheduled Task.
 9. Every bridge/gateway call site passes its own explicit, minimal tool list — never rely on a shared "default tools" fallback.
+10. When registering a Windows Service under a user account, set its Log On credentials via `services.msc`'s GUI, not `sc.exe ... password= *` — the console prompt can silently corrupt the password while still reporting success.
