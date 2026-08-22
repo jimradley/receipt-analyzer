@@ -44,17 +44,39 @@
             </div>
         </div>
 
+        <div class="row g-3 mb-4">
+            <div class="col-4">
+                <div class="card h-100"><div class="card-body text-center">
+                    <div class="text-muted"><small>🍷 Booze this month</small></div>
+                    <div class="fs-5 fw-bold">@Money(_data.Spend.AlcoholThisMonth)</div>
+                </div></div>
+            </div>
+            <div class="col-4">
+                <div class="card h-100"><div class="card-body text-center">
+                    <div class="text-muted"><small>🍷 Booze last month</small></div>
+                    <div class="fs-5 fw-bold">@Money(_data.Spend.AlcoholLastMonth)</div>
+                </div></div>
+            </div>
+            <div class="col-4">
+                <div class="card h-100"><div class="card-body text-center">
+                    <div class="text-muted"><small>🍷 Booze all time</small></div>
+                    <div class="fs-5 fw-bold">@Money(_data.Spend.AlcoholTotalAllTime)</div>
+                </div></div>
+            </div>
+        </div>
+
         <div class="card mb-4">
             <div class="card-header"><strong>By month</strong></div>
             <div class="card-body p-0">
                 <table class="table table-sm align-middle mb-0">
-                    <thead><tr><th>Month</th><th class="text-end">Spend</th><th class="text-end">Receipts</th></tr></thead>
+                    <thead><tr><th>Month</th><th class="text-end">Spend</th><th class="text-end">🍷 Booze</th><th class="text-end">Receipts</th></tr></thead>
                     <tbody>
                         @foreach (var m in RecentMonths())
                         {
                             <tr>
                                 <td>@MonthLabel(m.Month)</td>
                                 <td class="text-end">@Money(m.Total)</td>
+                                <td class="text-end text-muted">@Money(m.AlcoholTotal)</td>
                                 <td class="text-end text-muted">@m.Receipts</td>
                             </tr>
                         }
@@ -190,9 +212,10 @@
 
     private sealed record SpendSummary(
         decimal TotalAllTime, decimal ThisMonth, decimal LastMonth, int ReceiptsAllTime,
-        List<MonthSpend> Months, List<RetailerSpend> Retailers);
+        List<MonthSpend> Months, List<RetailerSpend> Retailers,
+        decimal AlcoholTotalAllTime, decimal AlcoholThisMonth, decimal AlcoholLastMonth);
 
-    private sealed record MonthSpend(string Month, decimal Total, int Receipts);
+    private sealed record MonthSpend(string Month, decimal Total, int Receipts, decimal AlcoholTotal);
 
     private sealed record RetailerSpend(string Retailer, decimal Total, int Receipts, double Share);
 

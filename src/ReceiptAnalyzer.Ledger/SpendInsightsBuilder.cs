@@ -1,7 +1,9 @@
+using ReceiptAnalyzer.Agent;
+
 namespace ReceiptAnalyzer.Ledger;
 
 /// <summary>Total spend in one calendar month (<c>yyyy-MM</c>), oldest first.</summary>
-public sealed record MonthSpend(string Month, decimal Total, int Receipts);
+public sealed record MonthSpend(string Month, decimal Total, int Receipts, decimal AlcoholTotal = 0m);
 
 /// <summary>Total spend at one retailer across all history, with its share of overall spend (0..1).</summary>
 public sealed record RetailerSpend(string Retailer, decimal Total, int Receipts, double Share);
@@ -12,7 +14,12 @@ public sealed record SpendSummary(
     decimal LastMonth,
     int ReceiptsAllTime,
     IReadOnlyList<MonthSpend> Months,
-    IReadOnlyList<RetailerSpend> Retailers);
+    IReadOnlyList<RetailerSpend> Retailers,
+    // Alcohol (wine/beer/spirits/etc, see AlcoholNovaGuard.IsAlcohol) is a subset already counted
+    // within the totals above, not additional spend — shown separately for "how much on booze".
+    decimal AlcoholTotalAllTime = 0m,
+    decimal AlcoholThisMonth = 0m,
+    decimal AlcoholLastMonth = 0m);
 
 /// <summary>A product bought repeatedly that's worth a second look (US-owned, or ultra-processed).</summary>
 public sealed record RepeatOffender(
@@ -57,11 +64,14 @@ public static class SpendInsightsBuilder
 
         var months = records
             .GroupBy(r => r.Date.ToString("yyyy-MM"))
-            .Select(g => new MonthSpend(g.Key, LineSum(g), g.Select(r => r.Source).Distinct().Count()))
+            .Select(g => new MonthSpend(
+                g.Key, LineSum(g), g.Select(r => r.Source).Distinct().Count(),
+                LineSum(g.Where(r => AlcoholNovaGuard.IsAlcohol(r.Item)))))
             .OrderBy(m => m.Month)
             .ToList();
 
         var totalAllTime = records.Sum(LineTotal);
+        var alcoholAllTime = records.Where(r => AlcoholNovaGuard.IsAlcohol(r.Item)).Sum(LineTotal);
 
         var retailers = records
             .GroupBy(r => r.Retailer)
@@ -77,7 +87,10 @@ public static class SpendInsightsBuilder
             months.FirstOrDefault(m => m.Month == lastMonth)?.Total ?? 0m,
             records.Select(r => r.Source).Distinct().Count(),
             months,
-            retailers);
+            retailers,
+            alcoholAllTime,
+            months.FirstOrDefault(m => m.Month == thisMonth)?.AlcoholTotal ?? 0m,
+            months.FirstOrDefault(m => m.Month == lastMonth)?.AlcoholTotal ?? 0m);
     }
 
     private static RepeatOffenders BuildOffenders(PurchaseHistoryData history, DateOnly today)

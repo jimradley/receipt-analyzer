@@ -1,7 +1,7 @@
 // Caution! Be sure you understand the caveats before publishing an application with
 // offline support. See https://aka.ms/blazor-offline-considerations
 //
-// build-stamp: 2026-07-16T22:40Z-nav-fix — this comment MUST change on every deploy that touches
+// build-stamp: 2026-08-08T00:00Z-api-fetch-bypass — this comment MUST change on every deploy that touches
 // client assets. The browser detects a service-worker update only via a byte-for-byte compare of
 // THIS file's own text (never the imported service-worker-assets.js manifest, and never anything
 // served through this worker's own fetch handler, which serves index.html cache-first and so can
@@ -11,7 +11,16 @@
 self.importScripts('./service-worker-assets.js');
 self.addEventListener('install', event => event.waitUntil(onInstall(event)));
 self.addEventListener('activate', event => event.waitUntil(onActivate(event)));
-self.addEventListener('fetch', event => event.respondWith(onFetch(event)));
+self.addEventListener('fetch', event => {
+    // Don't intercept API calls at all (not even to pass them through via respondWith(fetch(...))).
+    // Re-forwarding an intercepted Request that carries a body (e.g. a multipart receipt-photo
+    // upload) via event.respondWith(fetch(event.request)) is unreliable in standalone/installed PWA
+    // mode and can throw a bare "TypeError: Failed to fetch" before any HTTP response exists, even
+    // though the exact same request works fine outside the service worker. Not calling
+    // respondWith() lets the browser handle the request natively, sidestepping that class of bug.
+    if (new URL(event.request.url).pathname.startsWith('/api/')) return;
+    event.respondWith(onFetch(event));
+});
 
 const cacheNamePrefix = 'offline-cache-';
 const cacheName = `${cacheNamePrefix}${self.assetsManifest.version}`;
@@ -52,12 +61,8 @@ async function onActivate(event) {
 }
 
 async function onFetch(event) {
-    // Never serve API calls from cache — auth and data must always hit the network.
-    const requestUrl = new URL(event.request.url);
-    if (requestUrl.pathname.startsWith('/api/')) {
-        return fetch(event.request);
-    }
-
+    // /api/* never reaches here — the fetch listener above returns early for those so the
+    // browser handles them natively, bypassing this cache logic entirely.
     let cachedResponse = null;
     if (event.request.method === 'GET') {
         // For all navigation requests, try to serve index.html from cache,

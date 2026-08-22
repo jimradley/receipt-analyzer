@@ -38,7 +38,7 @@
             @if (_busy)
             {
                 <span class="spinner-border spinner-border-sm me-2" role="status"></span>
-                <span>Analysing… (30–90s)</span>
+                <span>Analysing… (can take several minutes)</span>
             }
             else
             {
@@ -140,11 +140,30 @@
             var job = await resp.Content.ReadFromJsonAsync<AnalyseResponse>();
             if (job is null) { _error = "No job returned by server."; return; }
 
-            // Poll until the background pipeline finishes (or fails).
-            for (var i = 0; i < 120 && job is not null && job.Status is "Queued" or "Running"; i++)
+            // Poll until the background pipeline finishes (or fails). The pipeline runs several
+            // sequential Claude Code agent calls (extract, classify, up to several price-check
+            // chunks, seasonality), each individually budgeted up to 10 minutes server-side, so
+            // worst case is over an hour end to end — this must not give up before that. A
+            // measured real run already hit 947s (extract alone took 345s), which exceeded the
+            // previous 900s cap and made the UI report failure on a job that actually completed.
+            //
+            // A single poll can also transiently fail (e.g. the host CPU is busy running the
+            // Claude Code CLI for the current stage, or a brief network blip) — that must not
+            // abort the whole flow, since the job keeps processing server-side regardless. Only
+            // give up after several consecutive poll failures.
+            var consecutiveFailures = 0;
+            for (var i = 0; i < 2100 && job is not null && job.Status is "Queued" or "Running"; i++)
             {
                 await Task.Delay(2000);
-                job = await Http.GetFromJsonAsync<AnalyseResponse>($"api/analyses/{job.Id}");
+                try
+                {
+                    job = await Http.GetFromJsonAsync<AnalyseResponse>($"api/analyses/{job.Id}");
+                    consecutiveFailures = 0;
+                }
+                catch (Exception) when (++consecutiveFailures < 5)
+                {
+                    // Transient — keep polling.
+                }
             }
 
             if (job is null)

@@ -35,6 +35,34 @@ public class SpendInsightsTests
     }
 
     [Fact]
+    public void Alcohol_spend_is_tracked_separately_by_month_and_all_time()
+    {
+        var history = History(
+            Rec("Yellow Tail Shiraz", "Morrisons", new DateOnly(2026, 6, 1), 8.50m, "r1"),
+            Rec("Milk", "Morrisons", new DateOnly(2026, 6, 1), 1.20m, "r1"),          // not alcohol
+            Rec("Aspall Cider", "Aldi", new DateOnly(2026, 5, 3), 4.00m, "r2"));
+
+        var spend = SpendInsightsBuilder.Build(history, Today).Spend;
+
+        Assert.Equal(8.50m, spend.AlcoholThisMonth);  // June: wine only, not the milk
+        Assert.Equal(4.00m, spend.AlcoholLastMonth);  // May: cider
+        Assert.Equal(12.50m, spend.AlcoholTotalAllTime);
+
+        var june = Assert.Single(spend.Months, m => m.Month == "2026-06");
+        Assert.Equal(8.50m, june.AlcoholTotal);
+    }
+
+    [Fact]
+    public void Alcohol_spend_is_zero_when_no_alcohol_purchased()
+    {
+        var history = History(Rec("Milk", "Asda", new DateOnly(2026, 6, 1), 1.20m, "r1"));
+
+        var spend = SpendInsightsBuilder.Build(history, Today).Spend;
+        Assert.Equal(0m, spend.AlcoholThisMonth);
+        Assert.Equal(0m, spend.AlcoholTotalAllTime);
+    }
+
+    [Fact]
     public void Retailers_ranked_by_spend_with_share()
     {
         var history = History(

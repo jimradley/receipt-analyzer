@@ -144,6 +144,14 @@ app.MapGet("/api/shopping-list", (LedgerStore ledgerStore, WineCatalog wines) =>
     Results.Ok(ShoppingListBuilder.Build(ledgerStore.Load(), wines.Load())))
     .RequireAuthorization();
 
+// Re-checks market prices for BuyElsewhere entries not looked at in Jobs:BuyElsewhereRefreshDays days.
+// Called by Server Control's "Refresh Prices" action (via X-API-KEY); can run long (chunked web
+// searches), so callers should use a generous timeout.
+app.MapPost("/api/ledger/buy-elsewhere/refresh-prices",
+    async (BuyElsewherePriceRefresher refresher, CancellationToken ct) =>
+        Results.Ok(await refresher.RefreshStaleAsync(LondonToday(), ct)))
+    .RequireAuthorization();
+
 // Replenishment: learned cadence per regularly-bought staple, flagged Overdue / DueSoon / OnTrack.
 app.MapGet("/api/staples", (PurchaseHistoryStore history) =>
     Results.Ok(ReplenishmentBuilder.Build(history.Load(), LondonToday())))

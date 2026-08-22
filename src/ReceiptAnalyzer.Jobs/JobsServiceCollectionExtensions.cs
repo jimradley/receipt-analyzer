@@ -27,6 +27,12 @@ public static class JobsServiceCollectionExtensions
             outputDir,
             sp.GetRequiredService<JobsOptions>(),
             sp.GetRequiredService<ILogger<AnalysisPipeline>>()));
+        services.AddSingleton(sp => new BuyElsewherePriceRefresher(
+            sp.GetRequiredService<IAnalysisAgent>(),
+            sp.GetRequiredService<LedgerStore>(),
+            sp.GetRequiredService<PriceCacheStore>(),
+            sp.GetRequiredService<JobsOptions>(),
+            sp.GetRequiredService<ILogger<BuyElsewherePriceRefresher>>()));
         services.AddHostedService<AnalysisWorker>();
         return services;
     }
@@ -65,6 +71,7 @@ public static class JobsServiceCollectionExtensions
             PriceCacheNotFoundDays = configuration.GetValue("Jobs:PriceCacheNotFoundDays", 1),
             PriceCheckChunkSize = configuration.GetValue("Jobs:PriceCheckChunkSize", 4),
             PriceCheckRetryMax = configuration.GetValue("Jobs:PriceCheckRetryMax", 8),
+            BuyElsewhereRefreshDays = configuration.GetValue("Jobs:BuyElsewhereRefreshDays", 3),
             UsdToGbp = configuration.GetValue("Pricing:UsdToGbp", 0.79m),
             Pricing = pricing,
         };

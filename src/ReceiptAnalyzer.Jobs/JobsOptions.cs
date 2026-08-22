@@ -25,6 +25,9 @@ public sealed class JobsOptions
     /// <summary>Max items retried individually (with a "search harder" hint) after the first pass.</summary>
     public int PriceCheckRetryMax { get; init; } = 8;
 
+    /// <summary>How many days a BuyElsewhere entry's price can go unchecked before "Refresh Prices" re-checks it.</summary>
+    public int BuyElsewhereRefreshDays { get; init; } = 3;
+
     public decimal UsdToGbp { get; init; } = 0.79m;
 
     /// <summary>USD per-MTok rates keyed by model id. Models absent here contribute no cost estimate.</summary>

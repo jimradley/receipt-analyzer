@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using ReceiptAnalyzer.Bridge;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Host.UseWindowsService(o => o.ServiceName = "Receipt Analyzer Bridge");
 builder.Services.Configure<BridgeOptions>(builder.Configuration.GetSection(BridgeOptions.SectionName));
 builder.WebHost.UseUrls(builder.Configuration["Urls"] ?? "http://0.0.0.0:5095");
 
