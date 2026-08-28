@@ -39,11 +39,19 @@ app.MapPost("/agent/run", async (
 
     var prompt = req.Prompt;
     var hasImage = !string.IsNullOrWhiteSpace(req.ImagePath);
+    // Under --restricted the CLI's file tools are confined to the working directory, so it becomes
+    // the sandbox boundary: the image's own folder when there is one, otherwise an empty scratch
+    // dir. Never the reports folder - a CLI that can list it starts reasoning about work it thinks
+    // has already been done, and answers with prose instead of the JSON the pipeline asked for.
+    string? workingDirectory = null;
     if (hasImage)
     {
         var hostImagePath = PathMapper.Map(req.ImagePath!, options.PathMap);
         prompt = $"Read the receipt image at {hostImagePath} first.\n\n" + prompt;
+        workingDirectory = Path.GetDirectoryName(hostImagePath);
     }
+
+    workingDirectory = ResolveWorkingDirectory(workingDirectory, options);
 
     // Never honour a caller-supplied tool list against a host CLI — intersect it with the server
     // allowlist so the bridge can't be coerced into running Bash/Write/Edit on the host.
@@ -59,7 +67,7 @@ app.MapPost("/agent/run", async (
     var sw = Stopwatch.StartNew();
     try
     {
-        var stdout = await RunClaudeAsync(options, prompt, model, allowedTools, timeoutSeconds, ct);
+        var stdout = await RunClaudeAsync(options, prompt, model, allowedTools, timeoutSeconds, workingDirectory, ct);
         var parsed = ClaudeEnvelope.Parse(stdout);
         return Results.Ok(new AgentRunResponse(
             parsed.ResultText, parsed.Model ?? model, parsed.InputTokens, parsed.OutputTokens,
@@ -79,12 +87,26 @@ app.MapPost("/agent/run", async (
 
 app.Run();
 
+static string ResolveWorkingDirectory(string? preferred, BridgeOptions options)
+{
+    if (!string.IsNullOrWhiteSpace(preferred) && Directory.Exists(preferred))
+        return preferred!;
+
+    var scratch = string.IsNullOrWhiteSpace(options.ScratchDirectory)
+        ? Path.Combine(Path.GetTempPath(), "receipt-analyzer-bridge")
+        : options.ScratchDirectory!;
+    Directory.CreateDirectory(scratch);
+    return scratch;
+}
+
 static async Task<string> RunClaudeAsync(
-    BridgeOptions options, string prompt, string model, string allowedTools, int timeoutSeconds, CancellationToken ct)
+    BridgeOptions options, string prompt, string model, string allowedTools, int timeoutSeconds,
+    string workingDirectory, CancellationToken ct)
 {
     var psi = new ProcessStartInfo
     {
         FileName = options.ClaudeExecutable,
+        WorkingDirectory = workingDirectory,
         RedirectStandardOutput = true,
         RedirectStandardError = true,
         UseShellExecute = false,
@@ -100,6 +122,22 @@ static async Task<string> RunClaudeAsync(
     psi.ArgumentList.Add(model);
     psi.ArgumentList.Add("--allowedTools");
     psi.ArgumentList.Add(allowedTools);
+    // --allowedTools only *adds* permissions; it never withholds any. The host settings file the
+    // service account inherits can still grant Write/Edit (a defaultMode of "auto" does exactly
+    // that), so the deny list, the permission mode and --restricted below are what actually keep
+    // this call read-only.
+    if (!string.IsNullOrWhiteSpace(options.DisallowedTools))
+    {
+        psi.ArgumentList.Add("--disallowedTools");
+        psi.ArgumentList.Add(options.DisallowedTools);
+    }
+    if (!string.IsNullOrWhiteSpace(options.PermissionMode))
+    {
+        psi.ArgumentList.Add("--permission-mode");
+        psi.ArgumentList.Add(options.PermissionMode);
+    }
+    if (options.Restricted)
+        psi.ArgumentList.Add("--restricted");
     psi.ArgumentList.Add("--max-turns");
     psi.ArgumentList.Add(options.MaxTurns.ToString());
 
