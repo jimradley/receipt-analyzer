@@ -34,6 +34,28 @@ public class JobStoreTests : IDisposable
     }
 
     [Fact]
+    public void GetOrCreate_retries_a_failed_identical_image_as_a_fresh_job()
+    {
+        var store = new JobStore(_dir);
+        var bytes = Img("failed-receipt");
+        var (failed, _) = store.GetOrCreate(bytes, "image/jpeg");
+        failed.Status = JobStatus.Failed;
+        failed.Attempts = 3;
+        failed.Error = "allowance exhausted";
+        store.Save(failed);
+        store.DeleteImage(failed.Id);
+
+        var (retry, created) = store.GetOrCreate(bytes, "image/jpeg");
+
+        Assert.True(created);
+        Assert.Equal(failed.Id, retry.Id);
+        Assert.Equal(JobStatus.Queued, retry.Status);
+        Assert.Equal(0, retry.Attempts);
+        Assert.Null(retry.Error);
+        Assert.Equal(bytes, store.GetImage(retry.Id));
+    }
+
+    [Fact]
     public void Different_images_get_different_ids()
     {
         var store = new JobStore(_dir);

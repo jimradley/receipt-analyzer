@@ -33,12 +33,17 @@ public sealed class JobStore
     private string JobPath(string id) => Path.Combine(_jobsDir, id + ".json");
     private string ImagePath(string id) => Path.Combine(_jobsDir, id + ".img");
 
-    /// <summary>Returns the existing job for this image, or creates and persists a fresh Queued one.</summary>
+    /// <summary>
+    /// Returns the existing active/completed job for this image, or creates a fresh queued job.
+    /// Failed jobs are recreated so uploading the same receipt is an explicit retry rather than a
+    /// permanent replay of the cached error.
+    /// </summary>
     public (AnalysisJob Job, bool Created) GetOrCreate(byte[] imageBytes, string mediaType)
     {
         var id = ComputeId(imageBytes);
         var existing = Get(id);
-        if (existing is not null) return (existing, false);
+        if (existing is not null && existing.Status != JobStatus.Failed)
+            return (existing, false);
 
         var job = new AnalysisJob { Id = id, MediaType = mediaType };
         File.WriteAllBytes(ImagePath(id), imageBytes);
