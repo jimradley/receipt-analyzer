@@ -227,7 +227,7 @@ static async Task<string> RunCodexAsync(
         {
             // Use the native executable, not the npm .cmd shim: ArgumentList can safely quote each
             // option for CreateProcess, while cmd.exe adds a second, fragile quoting layer.
-            FileName = options.CodexExecutable,
+            FileName = CodexExecutableResolver.Resolve(options.CodexExecutable),
             WorkingDirectory = workingDirectory,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
