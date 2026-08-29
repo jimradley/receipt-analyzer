@@ -44,9 +44,10 @@ app.MapPost("/agent/run", async (
     // dir. Never the reports folder - a CLI that can list it starts reasoning about work it thinks
     // has already been done, and answers with prose instead of the JSON the pipeline asked for.
     string? workingDirectory = null;
+    string? hostImagePath = null;
     if (hasImage)
     {
-        var hostImagePath = PathMapper.Map(req.ImagePath!, options.PathMap);
+        hostImagePath = PathMapper.Map(req.ImagePath!, options.PathMap);
         prompt = $"Read the receipt image at {hostImagePath} first.\n\n" + prompt;
         workingDirectory = Path.GetDirectoryName(hostImagePath);
     }
@@ -69,19 +70,32 @@ app.MapPost("/agent/run", async (
     {
         var stdout = await RunClaudeAsync(options, prompt, model, allowedTools, timeoutSeconds, workingDirectory, ct);
         var parsed = ClaudeEnvelope.Parse(stdout);
+
+        if (parsed.IsError && options.CodexFallbackEnabled && ClaudeLimitDetector.IsLimitError(parsed.ResultText))
+        {
+            logger.LogWarning(
+                "Claude Code allowance exhausted; falling back to signed-in Codex model {Model}.",
+                options.CodexFallbackModel);
+            var codexResult = await RunCodexAsync(
+                options, prompt, hostImagePath, permitted, timeoutSeconds, workingDirectory, ct);
+            return Results.Ok(new AgentRunResponse(
+                codexResult, options.CodexFallbackModel, 0, 0,
+                (int)sw.ElapsedMilliseconds, IsError: false));
+        }
+
         return Results.Ok(new AgentRunResponse(
             parsed.ResultText, parsed.Model ?? model, parsed.InputTokens, parsed.OutputTokens,
             (int)sw.ElapsedMilliseconds, parsed.IsError));
     }
     catch (OperationCanceledException)
     {
-        logger.LogWarning("claude CLI call timed out after {Seconds}s.", timeoutSeconds);
-        return Results.Problem("claude CLI call timed out.", statusCode: StatusCodes.Status504GatewayTimeout);
+        logger.LogWarning("Bridge agent call timed out after {Seconds}s.", timeoutSeconds);
+        return Results.Problem("Bridge agent call timed out.", statusCode: StatusCodes.Status504GatewayTimeout);
     }
     catch (Exception ex)
     {
-        logger.LogError(ex, "claude CLI call failed.");
-        return Results.Problem($"claude CLI call failed: {ex.Message}", statusCode: StatusCodes.Status502BadGateway);
+        logger.LogError(ex, "Bridge agent call failed.");
+        return Results.Problem($"Bridge agent call failed: {ex.Message}", statusCode: StatusCodes.Status502BadGateway);
     }
 });
 
@@ -111,6 +125,8 @@ static async Task<string> RunClaudeAsync(
         RedirectStandardError = true,
         UseShellExecute = false,
         CreateNoWindow = true,
+        StandardOutputEncoding = Encoding.UTF8,
+        StandardErrorEncoding = Encoding.UTF8,
     };
     // ArgumentList (not a concatenated command line) avoids shell-quoting pitfalls for a prompt that
     // may contain quotes, newlines, or receipt-derived text.
@@ -162,8 +178,116 @@ static async Task<string> RunClaudeAsync(
     var stdout = await stdoutTask;
     var stderr = await stderrTask;
     if (process.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
+    {
+        // Some Claude CLI versions put allowance errors only on stderr and emit no JSON envelope.
+        // Convert that one terminal condition into the normal envelope shape so the caller's
+        // narrowly-scoped Codex failover path still runs.
+        if (ClaudeLimitDetector.IsLimitError(stderr))
+            return System.Text.Json.JsonSerializer.Serialize(new { result = stderr, is_error = true });
         throw new InvalidOperationException($"claude exited {process.ExitCode}: {stderr}");
+    }
     return stdout;
+}
+
+static async Task<string> RunCodexAsync(
+    BridgeOptions options, string prompt, string? imagePath, IReadOnlyCollection<string> permittedTools,
+    int timeoutSeconds, string workingDirectory, CancellationToken ct)
+{
+    var outputPath = Path.Combine(Path.GetTempPath(), $"receipt-analyzer-codex-{Guid.NewGuid():N}.txt");
+    try
+    {
+        // The prompt is sent via stdin: receipt/rules payloads can exceed Windows' command-line
+        // limit and must never be interpolated into the command arguments.
+        var args = new List<string>();
+        if (permittedTools.Contains("WebSearch", StringComparer.OrdinalIgnoreCase) ||
+            permittedTools.Contains("WebFetch", StringComparer.OrdinalIgnoreCase))
+            args.Add("--search");
+
+        args.AddRange([
+            "exec",
+            "--cd", workingDirectory,
+            "--sandbox", "read-only",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--color", "never",
+            "--output-last-message", outputPath,
+            "--model", options.CodexFallbackModel,
+            "--config", $"model_reasoning_effort=\"{options.CodexReasoningEffort}\"",
+        ]);
+        if (!string.IsNullOrWhiteSpace(imagePath))
+        {
+            args.Add("--image");
+            args.Add(imagePath);
+        }
+        args.Add("-");
+
+        var psi = new ProcessStartInfo
+        {
+            // Use the native executable, not the npm .cmd shim: ArgumentList can safely quote each
+            // option for CreateProcess, while cmd.exe adds a second, fragile quoting layer.
+            FileName = options.CodexExecutable,
+            WorkingDirectory = workingDirectory,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardInputEncoding = Encoding.UTF8,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+
+        using var process = new Process { StartInfo = psi };
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+        process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cts.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(cts.Token);
+        await process.StandardInput.WriteAsync(prompt.AsMemory(), cts.Token);
+        process.StandardInput.Close();
+
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            TryKillTree(process);
+            throw;
+        }
+
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Codex fallback exited {process.ExitCode}: {ErrorExcerpt(stdout + Environment.NewLine + stderr)}");
+
+        if (!File.Exists(outputPath))
+            throw new InvalidOperationException("Codex fallback produced no final-response file.");
+
+        var result = await File.ReadAllTextAsync(outputPath, Encoding.UTF8, ct);
+        if (string.IsNullOrWhiteSpace(result))
+            throw new InvalidOperationException("Codex fallback returned an empty response.");
+        return result;
+    }
+    finally
+    {
+        try { File.Delete(outputPath); } catch { /* best effort */ }
+    }
+}
+
+static string ErrorExcerpt(string value)
+{
+    const int half = 1_000;
+    value = value.Trim();
+    return value.Length <= half * 2
+        ? value
+        : value[..half] + "\n... [middle truncated] ...\n" + value[^half..];
 }
 
 static void TryKillTree(Process process)

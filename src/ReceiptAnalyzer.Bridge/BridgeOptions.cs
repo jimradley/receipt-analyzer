@@ -19,6 +19,22 @@ public sealed class BridgeOptions
     /// <summary>Executable name/path for the Claude Code CLI. Must be resolvable on PATH, or a full path.</summary>
     public string ClaudeExecutable { get; set; } = "claude";
 
+    /// <summary>
+    /// When Claude Code reports that its subscription/session allowance is exhausted, retry the
+    /// same request through the host user's signed-in Codex CLI. This uses the ChatGPT account,
+    /// rather than the metered OpenAI API fallback configured in ReceiptAnalyzer.Api.
+    /// </summary>
+    public bool CodexFallbackEnabled { get; set; } = true;
+
+    /// <summary>Native executable for the signed-in Codex CLI (not the npm <c>.cmd</c> shim).</summary>
+    public string CodexExecutable { get; set; } = "codex.exe";
+
+    /// <summary>Model used only after Claude Code reports an allowance/session limit.</summary>
+    public string CodexFallbackModel { get; set; } = "gpt-5.6-terra";
+
+    /// <summary>Reasoning effort used by the Codex fallback.</summary>
+    public string CodexReasoningEffort { get; set; } = "medium";
+
     public int DefaultTimeoutSeconds { get; set; } = 600;
 
     /// <summary>Cap on agentic turns per call — a non-interactive safety net, not a normal ceiling.</summary>
