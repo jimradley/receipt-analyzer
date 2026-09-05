@@ -37,6 +37,10 @@ app.MapPost("/agent/run", async (
     if (string.IsNullOrWhiteSpace(req.Prompt))
         return Results.BadRequest(new { error = "prompt is required." });
 
+    var provider = string.IsNullOrWhiteSpace(req.Provider) ? "claude" : req.Provider.Trim().ToLowerInvariant();
+    if (provider is not ("claude" or "codex"))
+        return Results.BadRequest(new { error = "provider must be claude or codex." });
+
     var prompt = req.Prompt;
     var hasImage = !string.IsNullOrWhiteSpace(req.ImagePath);
     // Under --restricted the CLI's file tools are confined to the working directory, so it becomes
@@ -56,8 +60,11 @@ app.MapPost("/agent/run", async (
 
     // Never honour a caller-supplied tool list against a host CLI — intersect it with the server
     // allowlist so the bridge can't be coerced into running Bash/Write/Edit on the host.
-    var permitted = ToolFilter.Resolve(req.AllowedTools, options, needsRead: hasImage);
-    if (permitted.Count == 0)
+    var explicitlyToolFree = provider == "codex" && req.AllowedTools is { Count: 0 } && !hasImage;
+    var permitted = explicitlyToolFree
+        ? Array.Empty<string>()
+        : ToolFilter.Resolve(req.AllowedTools, options, needsRead: hasImage);
+    if (permitted.Count == 0 && !explicitlyToolFree)
         return Results.BadRequest(new { error = "no permitted tools requested." });
 
     var allowedTools = string.Join(",", permitted);
@@ -68,6 +75,20 @@ app.MapPost("/agent/run", async (
     var sw = Stopwatch.StartNew();
     try
     {
+        if (provider == "codex")
+        {
+            var codexModel = string.IsNullOrWhiteSpace(req.Model) ? options.CodexMatcherModel : req.Model;
+            if (!codexModel.Equals(options.CodexMatcherModel, StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "model is not permitted for direct Codex calls." });
+            var effort = req.ReasoningEffort?.ToLowerInvariant() is "low" or "medium"
+                ? req.ReasoningEffort!.ToLowerInvariant() : "low";
+            var codexResult = await RunCodexAsync(
+                options, prompt, hostImagePath, permitted, timeoutSeconds, workingDirectory,
+                codexModel, effort, ct);
+            return Results.Ok(new AgentRunResponse(
+                codexResult, codexModel, 0, 0, (int)sw.ElapsedMilliseconds, IsError: false));
+        }
+
         var stdout = await RunClaudeAsync(options, prompt, model, allowedTools, timeoutSeconds, workingDirectory, ct);
         var parsed = ClaudeEnvelope.Parse(stdout);
 
@@ -77,7 +98,8 @@ app.MapPost("/agent/run", async (
                 "Claude Code allowance exhausted; falling back to signed-in Codex model {Model}.",
                 options.CodexFallbackModel);
             var codexResult = await RunCodexAsync(
-                options, prompt, hostImagePath, permitted, timeoutSeconds, workingDirectory, ct);
+                options, prompt, hostImagePath, permitted, timeoutSeconds, workingDirectory,
+                options.CodexFallbackModel, options.CodexReasoningEffort, ct);
             return Results.Ok(new AgentRunResponse(
                 codexResult, options.CodexFallbackModel, 0, 0,
                 (int)sw.ElapsedMilliseconds, IsError: false));
@@ -191,7 +213,7 @@ static async Task<string> RunClaudeAsync(
 
 static async Task<string> RunCodexAsync(
     BridgeOptions options, string prompt, string? imagePath, IReadOnlyCollection<string> permittedTools,
-    int timeoutSeconds, string workingDirectory, CancellationToken ct)
+    int timeoutSeconds, string workingDirectory, string model, string reasoningEffort, CancellationToken ct)
 {
     var outputPath = Path.Combine(Path.GetTempPath(), $"receipt-analyzer-codex-{Guid.NewGuid():N}.txt");
     try
@@ -213,8 +235,8 @@ static async Task<string> RunCodexAsync(
             "--ignore-rules",
             "--color", "never",
             "--output-last-message", outputPath,
-            "--model", options.CodexFallbackModel,
-            "--config", $"model_reasoning_effort=\"{options.CodexReasoningEffort}\"",
+            "--model", model,
+            "--config", $"model_reasoning_effort=\"{reasoningEffort}\"",
         ]);
         if (!string.IsNullOrWhiteSpace(imagePath))
         {
@@ -309,7 +331,9 @@ public sealed record AgentRunRequest(
     string? ImagePath = null,
     string? Model = null,
     List<string>? AllowedTools = null,
-    int? TimeoutSeconds = null);
+    int? TimeoutSeconds = null,
+    string? Provider = null,
+    string? ReasoningEffort = null);
 
 /// <summary>Response body for POST /agent/run — the CLI's JSON envelope, parsed defensively.</summary>
 public sealed record AgentRunResponse(

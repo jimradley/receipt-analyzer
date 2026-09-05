@@ -6,7 +6,7 @@
 
 <div class="stores">
     <h1 class="stores__title">Shopping by store</h1>
-    <p class="text-muted">What to buy at each store — items that are cheaper here than where you paid, plus your rated wines available here. Ordered by total saving.</p>
+    <p class="text-muted">The cheapest current store for every exact product and pack in your purchase history, plus your rated wines.</p>
 
     @if (_error is not null)
     {
@@ -16,12 +16,28 @@
     {
         <div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Loading…</div>
     }
-    else if (_result.Stores.Count == 0)
+    else if (_result.Stores.Count == 0 && _result.UnpricedProducts.Count == 0)
     {
         <p class="text-muted">Nothing to show yet — analyse a few receipts to build the buy-elsewhere list.</p>
     }
     else
     {
+        <div class="alert alert-light border inventory-summary">
+            <strong>@_result.InventoryTotal inventory product@(_result.InventoryTotal == 1 ? "" : "s")</strong>
+            · @PricedCount priced · @_result.UnpricedProducts.Count awaiting a reliable price
+            @if (_result.Refresh?.LastPublishedAt is not null)
+            {
+                <span> · Prices published through batch @_result.Refresh.PublishedBatch at @PublishedTime</span>
+            }
+            @if (_result.Refresh?.Status == "active")
+            {
+                <div class="small text-muted mt-1">
+                    Refresh active: @_result.Refresh.Processed / @_result.Refresh.Total processed,
+                    @_result.Refresh.Remaining remaining. Next batch @NextBatchTime.
+                </div>
+            }
+        </div>
+
         <nav class="store-jump" aria-label="Jump to a store">
             <div class="store-jump__grid">
                 @for (var i = 0; i < _result.Stores.Count; i++)
@@ -30,6 +46,13 @@
                     <a class="store-jump__link" href="@($"#store-{i}")">
                         <span class="store-jump__name">@store.Store</span>
                         <span class="store-jump__meta">@ItemCount(store) item@(ItemCount(store) == 1 ? "" : "s")</span>
+                    </a>
+                }
+                @if (_result.UnpricedProducts.Count > 0)
+                {
+                    <a class="store-jump__link" href="#needs-matching">
+                        <span class="store-jump__name">Needs matching</span>
+                        <span class="store-jump__meta">@_result.UnpricedProducts.Count item@(_result.UnpricedProducts.Count == 1 ? "" : "s")</span>
                     </a>
                 }
             </div>
@@ -57,8 +80,32 @@
                                 @foreach (var g in store.Groceries)
                                 {
                                     <tr>
-                                        <td>@g.Item</td>
-                                        <td class="text-end">£@g.BestPrice.ToString("F2")</td>
+                                        <td>
+                                            @if (g.SourceUrl is not null)
+                                            {
+                                                <a href="@g.SourceUrl" target="_blank" rel="noopener noreferrer">@g.Item</a>
+                                            }
+                                            else { @g.Item }
+                                            @if (g.Deal is not null)
+                                            {
+                                                <div class="small text-primary">@g.Deal</div>
+                                            }
+                                            @if (g.CheckedOn is not null)
+                                            {
+                                                <div class="small text-muted">Checked @g.CheckedOn</div>
+                                            }
+                                        </td>
+                                        <td class="text-end">
+                                            £@g.BestPrice.ToString("F2")
+                                            @if (g.MinimumQuantity > 1)
+                                            {
+                                                <div class="small text-muted">buy @g.MinimumQuantity · £@g.CheckoutCost?.ToString("F2") checkout</div>
+                                            }
+                                            @if (g.LoyaltyRequired)
+                                            {
+                                                <div class="small text-muted">membership required</div>
+                                            }
+                                        </td>
                                         <td class="text-end text-success"><strong>£@g.Saving.ToString("F2")</strong></td>
                                         <td class="text-muted"><small>£@g.PricePaid.ToString("F2") @@ @g.StorePaid</small></td>
                                     </tr>
@@ -96,6 +143,34 @@
             </section>
         }
 
+        @if (_result.UnpricedProducts.Count > 0)
+        {
+            <section class="card mb-4 store-section" id="needs-matching">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>Needs matching</strong>
+                    <span class="badge bg-secondary">@_result.UnpricedProducts.Count</span>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted">These remain in your complete inventory, but do not yet have a defensible exact product-and-pack comparison.</p>
+                    <table class="table table-sm align-middle mb-0">
+                        <thead><tr><th>Item</th><th>Status</th><th>Last bought</th></tr></thead>
+                        <tbody>
+                            @foreach (var item in _result.UnpricedProducts)
+                            {
+                                <tr>
+                                    <td>@item.Item @if (item.Pack is not null) { <small class="text-muted">(@item.Pack)</small> }</td>
+                                    <td><span class="badge bg-secondary">@StatusLabel(item.Status)</span>
+                                        @if (item.Error is not null) { <div class="small text-muted">@item.Error</div> }
+                                    </td>
+                                    <td>@item.LastPurchasedOn</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        }
+
         @if (_result.HiddenGroceryItems > 0)
         {
             <p class="text-muted"><small>@_result.HiddenGroceryItems item(s) hidden — only cheaper at a store outside your set (e.g. Co-op / M&S).</small></p>
@@ -119,15 +194,36 @@
         }
     }
 
-    private sealed record ShoppingListResult(List<StoreShoppingList> Stores, int HiddenGroceryItems);
+    private sealed record ShoppingListResult(
+        List<StoreShoppingList> Stores, int HiddenGroceryItems, int InventoryTotal,
+        List<UnpricedInventoryItem> UnpricedProducts, RefreshState? Refresh);
 
     private sealed record StoreShoppingList(
         string Store, decimal TotalSaving, List<StoreGroceryItem> Groceries, List<StoreWine> Wines);
 
     private sealed record StoreGroceryItem(
-        string Item, decimal BestPrice, decimal Saving, decimal PricePaid, string StorePaid, string LastSeen);
+        string Item, decimal BestPrice, decimal Saving, decimal PricePaid, string StorePaid, string LastSeen,
+        string? Deal, int MinimumQuantity, decimal? CheckoutCost, bool LoyaltyRequired,
+        string? CheckedOn, string? SourceUrl);
+
+    private sealed record UnpricedInventoryItem(string Item, string? Pack, string Status, string? Error, string LastPurchasedOn);
+    private sealed record RefreshState(
+        string Status, int PublishedBatch, int Total, int Processed, int Remaining,
+        string? LastPublishedAt, string? NextBatchAt);
 
     private sealed record StoreWine(string Grape, string Wine, string Price, string Tier);
 
     private static int ItemCount(StoreShoppingList store) => store.Groceries.Count + store.Wines.Count;
+    private int PricedCount => _result is null ? 0 : _result.InventoryTotal - _result.UnpricedProducts.Count;
+    private string PublishedTime => FormatTime(_result?.Refresh?.LastPublishedAt);
+    private string NextBatchTime => FormatTime(_result?.Refresh?.NextBatchAt);
+    private static string FormatTime(string? value) => DateTimeOffset.TryParse(value, out var time)
+        ? time.ToLocalTime().ToString("dd MMM HH:mm") : "unknown";
+    private static string StatusLabel(string status) => status switch
+    {
+        "not-comparable" => "Not comparable",
+        "unavailable" => "Unavailable",
+        "error" => "Retry needed",
+        _ => "Pending"
+    };
 }

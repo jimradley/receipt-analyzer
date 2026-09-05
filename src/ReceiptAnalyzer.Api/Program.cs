@@ -24,6 +24,7 @@ builder.Services.AddSingleton(_ => new PriceCacheStore(outputDir));
 builder.Services.AddSingleton(_ => new UsageLedgerStore(outputDir));
 builder.Services.AddSingleton<PurchaseHistoryStore>(sp =>
     new PurchaseHistoryStore(outputDir, sp.GetRequiredService<ILogger<PurchaseHistoryStore>>()));
+builder.Services.AddSingleton(_ => new InventoryStore(outputDir));
 builder.Services.AddSingleton<ReportLibrary>(_ => new ReportLibrary(outputDir));
 builder.Services.AddAnalysisJobs(outputDir, builder.Configuration);
 
@@ -140,16 +141,36 @@ app.MapGet("/api/ledgers/{which}", (string which, ReportLibrary library) =>
 
 // Per-store "what to buy here" list: the buy-elsewhere ledger pivoted by recommended store,
 // merged with the per-store wine recommendations from the Wine project.
-app.MapGet("/api/shopping-list", (LedgerStore ledgerStore, WineCatalog wines) =>
-    Results.Ok(ShoppingListBuilder.Build(ledgerStore.Load(), wines.Load())))
+app.MapGet("/api/shopping-list", (InventoryStore inventory, PurchaseHistoryStore history, WineCatalog wines, HttpContext ctx) =>
+{
+    ctx.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+    return Results.Ok(ShoppingListBuilder.Build(inventory.Synchronise(history.Load()), wines.Load()));
+})
     .RequireAuthorization();
 
-// Re-checks market prices for BuyElsewhere entries not looked at in Jobs:BuyElsewhereRefreshDays days.
-// Called by Server Control's "Refresh Prices" action (via X-API-KEY); can run long (chunked web
-// searches), so callers should use a generous timeout.
+app.MapPost("/api/inventory/price-refresh", (
+    InventoryPriceRefreshService refresh) =>
+{
+    var state = refresh.Start(LondonToday(), DateTimeOffset.UtcNow);
+    return state.Status == "active"
+        ? Results.Accepted("/api/inventory/price-refresh", state)
+        : Results.Ok(state);
+}).RequireAuthorization();
+
+app.MapGet("/api/inventory/price-refresh", (InventoryPriceRefreshService refresh, HttpContext ctx) =>
+{
+    ctx.Response.Headers.CacheControl = "no-store, no-cache, must-revalidate";
+    return Results.Ok(refresh.Status());
+}).RequireAuthorization();
+
+app.MapDelete("/api/inventory/price-refresh", (InventoryPriceRefreshService refresh) =>
+    Results.Ok(refresh.Cancel(DateTimeOffset.UtcNow))).RequireAuthorization();
+
+// Compatibility route for the former synchronous buy-elsewhere refresh. It now starts the durable,
+// incrementally-published inventory queue and returns immediately.
 app.MapPost("/api/ledger/buy-elsewhere/refresh-prices",
-    async (BuyElsewherePriceRefresher refresher, CancellationToken ct) =>
-        Results.Ok(await refresher.RefreshStaleAsync(LondonToday(), ct)))
+    (InventoryPriceRefreshService refresh) =>
+        Results.Accepted("/api/inventory/price-refresh", refresh.Start(LondonToday(), DateTimeOffset.UtcNow)))
     .RequireAuthorization();
 
 // Replenishment: learned cadence per regularly-bought staple, flagged Overdue / DueSoon / OnTrack.

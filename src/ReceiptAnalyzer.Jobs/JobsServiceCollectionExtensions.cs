@@ -13,8 +13,10 @@ public static class JobsServiceCollectionExtensions
         this IServiceCollection services, string outputDir, IConfiguration configuration)
     {
         var options = BuildOptions(configuration);
+        var inventoryOptions = BuildInventoryOptions(configuration);
 
         services.AddSingleton(options);
+        services.AddSingleton(inventoryOptions);
         services.AddSingleton(new JobStore(outputDir));
         services.AddSingleton<IJobQueue, ChannelJobQueue>();
         services.AddSingleton(sp => new AnalysisPipeline(
@@ -33,7 +35,20 @@ public static class JobsServiceCollectionExtensions
             sp.GetRequiredService<PriceCacheStore>(),
             sp.GetRequiredService<JobsOptions>(),
             sp.GetRequiredService<ILogger<BuyElsewherePriceRefresher>>()));
+        services.AddHttpClient<TrolleyPriceClient>(http =>
+        {
+            http.BaseAddress = new Uri("https://www.trolley.co.uk/");
+            http.Timeout = TimeSpan.FromSeconds(30);
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("ReceiptAnalyzer/1.0 price-inventory");
+        });
+        services.AddHttpClient<IProductCandidateMatcher, CodexCandidateMatcher>(http =>
+        {
+            http.BaseAddress = new Uri(inventoryOptions.BridgeUrl.TrimEnd('/') + "/");
+            http.Timeout = TimeSpan.FromMinutes(4);
+        });
+        services.AddSingleton<InventoryPriceRefreshService>();
         services.AddHostedService<AnalysisWorker>();
+        services.AddHostedService<InventoryPriceRefreshWorker>();
         return services;
     }
 
@@ -76,4 +91,20 @@ public static class JobsServiceCollectionExtensions
             Pricing = pricing,
         };
     }
+
+    private static InventoryRefreshOptions BuildInventoryOptions(IConfiguration configuration) => new()
+    {
+        KnownBatchSize = configuration.GetValue("PriceInventory:KnownBatchSize", 50),
+        AgentBatchSize = configuration.GetValue("PriceInventory:AgentBatchSize", 5),
+        RecentPurchaseDays = configuration.GetValue("PriceInventory:RecentPurchaseDays", 90),
+        RecentRefreshDays = configuration.GetValue("PriceInventory:RecentRefreshDays", 7),
+        OlderRefreshDays = configuration.GetValue("PriceInventory:OlderRefreshDays", 30),
+        UnmatchedRetryDays = configuration.GetValue("PriceInventory:UnmatchedRetryDays", 30),
+        BatchDelay = TimeSpan.FromMinutes(configuration.GetValue("PriceInventory:BatchDelayMinutes", 60)),
+        BridgeUrl = configuration["PriceInventory:BridgeUrl"] ??
+                    configuration["Agent:ClaudeCode:BridgeUrl"] ?? "http://localhost:5095",
+        BridgeKeyEnvVar = configuration["PriceInventory:BridgeKeyEnvVar"] ??
+                          configuration["Agent:ClaudeCode:BridgeKeyEnvVar"] ?? "RECEIPT_BRIDGE_KEY",
+        CodexModel = configuration["PriceInventory:CodexModel"] ?? "gpt-5.6-luna"
+    };
 }

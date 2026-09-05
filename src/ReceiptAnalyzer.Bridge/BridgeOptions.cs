@@ -32,6 +32,9 @@ public sealed class BridgeOptions
     /// <summary>Model used only after Claude Code reports an allowance/session limit.</summary>
     public string CodexFallbackModel { get; set; } = "gpt-5.6-terra";
 
+    /// <summary>Low-cost model permitted for explicit, tool-free structured matching calls.</summary>
+    public string CodexMatcherModel { get; set; } = "gpt-5.6-luna";
+
     /// <summary>Reasoning effort used by the Codex fallback.</summary>
     public string CodexReasoningEffort { get; set; } = "medium";
 
