@@ -176,6 +176,36 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 
 ---
 
+## 18. Historical price refreshes need a durable, published batch boundary
+
+- **What bit us:** refreshing every historical product in one agent run would spend most of the available session budget and leave the Stores page stale until the whole run finished.
+- **Root cause:** the work was modelled as one large refresh instead of a resumable queue, and deterministic product pages were unnecessarily sent through the agent.
+- **Fix:** materialise an exact product-plus-pack inventory from purchase history; fetch known product pages directly; send only small ambiguous candidate sets to a tool-free, low-cost matcher; publish each batch atomically, then wait an hour before the next batch. Persist status, counters, failures, and the next-batch time so restarts do not erase progress.
+- **Rule:** for large fan-out refreshes, make the queue durable, keep the deterministic path outside the LLM, cap ambiguous work, and make every successful batch independently visible.
+
+## 19. A successful deployment can still serve stale control-plane code
+
+- **What bit us:** the rebuilt Server Control container was healthy but still exposed the old action catalog.
+- **Root cause:** the compose Dockerfile copied `publish/` from the source build context, while the first publish wrote to a different host deployment directory; Docker therefore rebuilt a valid image from stale publish output.
+- **Fix:** publish into the directory named by the Dockerfile, rebuild without cache, restart, and verify the live action endpoint rather than relying on container health alone.
+- **Rule:** every multi-directory deployment needs an explicit publish-output contract; after rebuilding, verify a distinctive application behaviour or endpoint, not just a 200 health response.
+
+## 20. Automation defaults must match the deployed host port
+
+- **What bit us:** the new grocery refresh action reported that the target machine actively refused the connection, even though Receipt Analyzer was healthy.
+- **Root cause:** the script's fallback URL still pointed at an old development port; the runner environment did not override it.
+- **Fix:** changed the fallback to the live host-mapped port and verified the read-only status action end to end.
+- **Rule:** whenever an action calls a sibling service, test the exact script with the same runner environment and host-mapped port; a healthy container does not prove the automation URL is correct.
+
+## 21. Secrets in automation arguments require coordinated rotation
+
+- **What bit us:** the old manual refresh action carried the application API key in its argument list, making it easy to leak through configuration or process inspection.
+- **Root cause:** action definitions treated credentials as command parameters instead of runtime configuration.
+- **Fix:** removed the key from action arguments, read it from environment-backed secret storage, rotated the exposed key, restarted the application, and verified authenticated status without printing it.
+- **Rule:** automation actions should contain endpoint names and script paths only; credentials belong in environment-backed secret storage and should be rotated whenever exposure is possible.
+
+---
+
 ## What worked / keep doing
 
 - **Runtime-only image + host publish** for Blazor WASM — reliable and fast; keep this split.
