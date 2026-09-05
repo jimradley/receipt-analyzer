@@ -22,9 +22,23 @@
     }
     else
     {
-        @foreach (var store in _result.Stores)
+        <nav class="store-jump" aria-label="Jump to a store">
+            <div class="store-jump__grid">
+                @for (var i = 0; i < _result.Stores.Count; i++)
+                {
+                    var store = _result.Stores[i];
+                    <a class="store-jump__link" href="@($"#store-{i}")">
+                        <span class="store-jump__name">@store.Store</span>
+                        <span class="store-jump__meta">@ItemCount(store) item@(ItemCount(store) == 1 ? "" : "s")</span>
+                    </a>
+                }
+            </div>
+        </nav>
+
+        @for (var i = 0; i < _result.Stores.Count; i++)
         {
-            <div class="card mb-4">
+            var store = _result.Stores[i];
+            <section class="card mb-4 store-section" id="@($"store-{i}")">
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <strong>@store.Store</strong>
                     @if (store.TotalSaving > 0)
@@ -79,7 +93,7 @@
                         <p class="text-muted mb-0">Nothing here right now.</p>
                     }
                 </div>
-            </div>
+            </section>
         }
 
         @if (_result.HiddenGroceryItems > 0)
@@ -114,4 +128,6 @@
         string Item, decimal BestPrice, decimal Saving, decimal PricePaid, string StorePaid, string LastSeen);
 
     private sealed record StoreWine(string Grape, string Wine, string Price, string Tier);
+
+    private static int ItemCount(StoreShoppingList store) => store.Groceries.Count + store.Wines.Count;
 }
