@@ -204,6 +204,13 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Fix:** removed the key from action arguments, read it from environment-backed secret storage, rotated the exposed key, restarted the application, and verified authenticated status without printing it.
 - **Rule:** automation actions should contain endpoint names and script paths only; credentials belong in environment-backed secret storage and should be rotated whenever exposure is possible.
 
+## 22. A PWA redeploy needs a service-worker byte change, not just a new container
+
+- **What bit us:** the navigation-box code was deployed and its CSS was live, but an installed PWA still showed the old Stores page.
+- **Root cause:** the service worker's own build-stamp comment had not changed, so the browser considered the worker byte-for-byte identical and continued serving the old cached Blazor bundle. A healthy container and current API response did not prove the installed client had updated.
+- **Fix:** change the published service-worker stamp on every client-asset deploy, rebuild the published WASM output, restart the container, and verify the live worker bytes before asking the user to reload.
+- **Rule:** for installed PWAs, treat service-worker invalidation as part of deployment acceptance; verify both server health and client asset version, then close/reopen or hard-refresh the client.
+
 ---
 
 ## What worked / keep doing
@@ -226,3 +233,4 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 10. When registering a Windows Service under a user account, set its Log On credentials via `services.msc`'s GUI, not `sc.exe ... password= *` — the console prompt can silently corrupt the password while still reporting success.
 11. Give each agentic call the narrowest working directory that still works — visibility of prior output is a capability, and prove a permission control by trying to violate it before deploying.
 12. Re-read every shared prompt/rules asset whenever code takes over a step a human used to drive; a stale workflow instruction becomes an instruction to duplicate or fight the pipeline (see §17).
+13. When deploying a PWA client change, bump the service-worker bytes and verify the live build stamp; a healthy API/container alone is insufficient (see §22).
