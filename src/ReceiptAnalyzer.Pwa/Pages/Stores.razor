@@ -43,14 +43,14 @@
                 @for (var i = 0; i < _result.Stores.Count; i++)
                 {
                     var store = _result.Stores[i];
-                    <a class="store-jump__link" href="@($"/stores#store-{i}")">
+                    <a class="store-jump__link" href="#store-@i" onclick="event.preventDefault(); document.getElementById('store-@i')?.scrollIntoView({behavior: 'smooth', block: 'start'});">
                         <span class="store-jump__name">@store.Store</span>
                         <span class="store-jump__meta">@ItemCount(store) item@(ItemCount(store) == 1 ? "" : "s")</span>
                     </a>
                 }
                 @if (_result.UnpricedProducts.Count > 0)
                 {
-                    <a class="store-jump__link" href="/stores#needs-matching">
+                    <a class="store-jump__link" href="#needs-matching" onclick="event.preventDefault(); document.getElementById('needs-matching')?.scrollIntoView({behavior: 'smooth', block: 'start'});">
                         <span class="store-jump__name">Needs matching</span>
                         <span class="store-jump__meta">@_result.UnpricedProducts.Count item@(_result.UnpricedProducts.Count == 1 ? "" : "s")</span>
                     </a>
