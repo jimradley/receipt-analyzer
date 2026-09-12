@@ -177,4 +177,55 @@ public class ShoppingListBuilderTests
         var item = Assert.Single(sains.Groceries);
         Assert.Equal(2.50m, item.Saving);
     }
+
+    [Fact]
+    public void Build_hides_zero_saving_items_but_keeps_wine_only_stores()
+    {
+        var ledger = new LedgerData
+        {
+            BuyElsewhere =
+            {
+                Entry("Equal-price beans", "Asda", 0m),
+                Entry("Cheaper rice", "Morrisons", .40m)
+            }
+        };
+        var wines = new[]
+        {
+            new WineRecommendation("Asda", "Rioja", "House Rioja", "£8.00", "Top pick")
+        };
+
+        var result = ShoppingListBuilder.Build(ledger, wines);
+
+        var asda = Assert.Single(result.Stores, s => s.Store == "Asda");
+        Assert.Empty(asda.Groceries);
+        Assert.Single(asda.Wines);
+        Assert.Equal("Cheaper rice", Assert.Single(result.Stores, s => s.Store == "Morrisons").Groceries.Single().Item);
+    }
+}
+
+public class ShoppingAisleCatalogTests
+{
+    [Theory]
+    [InlineData("Bananas Loose", ShoppingAisleCatalog.FreshProduce)]
+    [InlineData("Semi Skimmed Milk 2L", ShoppingAisleCatalog.DairyAndEggs)]
+    [InlineData("Tinned Chopped Tomatoes", ShoppingAisleCatalog.TinsAndJars)]
+    [InlineData("Beans 400g", ShoppingAisleCatalog.TinsAndJars)]
+    [InlineData("Green Beans", ShoppingAisleCatalog.FreshProduce)]
+    [InlineData("Frozen Garden Peas", ShoppingAisleCatalog.Frozen)]
+    [InlineData("Cream Cleaner", ShoppingAisleCatalog.CleaningAndHousehold)]
+    [InlineData("Cheese & Onion Crisps", ShoppingAisleCatalog.ChocolateAndSnacks)]
+    [InlineData("Milk Chocolate", ShoppingAisleCatalog.ChocolateAndSnacks)]
+    [InlineData("Wine Gums", ShoppingAisleCatalog.ChocolateAndSnacks)]
+    [InlineData("Ginger Beer", ShoppingAisleCatalog.SoftDrinks)]
+    [InlineData("Apple Cider", ShoppingAisleCatalog.Alcohol)]
+    [InlineData("Mystery Product", ShoppingAisleCatalog.Other)]
+    public void Classifies_products_in_store_order(string item, string expected) =>
+        Assert.Equal(expected, ShoppingAisleCatalog.Classify(item));
+
+    [Fact]
+    public void Every_aisle_has_a_stable_unique_rank()
+    {
+        var ranks = ShoppingAisleCatalog.Ordered.Select(ShoppingAisleCatalog.SortOrder).ToList();
+        Assert.Equal(Enumerable.Range(0, ShoppingAisleCatalog.Ordered.Count), ranks);
+    }
 }

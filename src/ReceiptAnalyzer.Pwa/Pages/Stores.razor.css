@@ -51,6 +51,17 @@
     scroll-margin-top: 5rem;
 }
 
+.selection-column {
+    width: 2.5rem;
+    text-align: center;
+}
+
+.shopping-check {
+    width: 1.15rem;
+    height: 1.15rem;
+    cursor: pointer;
+}
+
 @media (max-width: 420px) {
     .store-jump__grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));

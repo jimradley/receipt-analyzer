@@ -3,9 +3,13 @@ namespace ReceiptAnalyzer.Ledger;
 public sealed record StoreGroceryItem(
     string Item, decimal BestPrice, decimal Saving, decimal PricePaid, string StorePaid, string LastSeen,
     string? Deal = null, int MinimumQuantity = 1, decimal? CheckoutCost = null,
-    bool LoyaltyRequired = false, string? CheckedOn = null, string? SourceUrl = null);
+    bool LoyaltyRequired = false, string? CheckedOn = null, string? SourceUrl = null,
+    string Key = "", string ProductKey = "", string Aisle = ShoppingAisleCatalog.Other,
+    int AisleOrder = 13);
 
-public sealed record StoreWine(string Grape, string Wine, string Price, string Tier);
+public sealed record StoreWine(
+    string Grape, string Wine, string Price, string Tier,
+    string Key = "", string Aisle = ShoppingAisleCatalog.Alcohol, int AisleOrder = 12);
 
 public sealed record StoreShoppingList(
     string Store, decimal TotalSaving,
@@ -42,6 +46,7 @@ public static class ShoppingListBuilder
 
         foreach (var entry in ledger.BuyElsewhere)
         {
+            if (entry.Saving <= 0) continue;
             var entryStores = StoreCatalog.ExtractAllowed(entry.Where);
             if (entryStores.Count == 0) { hidden++; continue; }
 
@@ -51,8 +56,11 @@ public static class ShoppingListBuilder
                     ? existing
                     : groceriesByStore[store] = new Dictionary<string, StoreGroceryItem>();
 
+                var aisle = ShoppingAisleCatalog.Classify(entry.Item);
                 var item = new StoreGroceryItem(
-                    entry.Item, entry.BestPrice, entry.Saving, entry.PricePaid, entry.StorePaid, entry.LastSeen);
+                    entry.Item, entry.BestPrice, entry.Saving, entry.PricePaid, entry.StorePaid, entry.LastSeen,
+                    Key: entry.Key, ProductKey: KeyNormaliser.Product(entry.Item), Aisle: aisle,
+                    AisleOrder: ShoppingAisleCatalog.SortOrder(aisle));
 
                 // De-dup an item appearing for the same store across entries; keep the biggest saving.
                 if (!items.TryGetValue(entry.Key, out var prev) || item.Saving > prev.Saving)
@@ -80,7 +88,9 @@ public static class ShoppingListBuilder
                 .OrderBy(w => WineCatalog.TierRank(w.Tier))
                 .ThenBy(w => w.Grape, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(w => w.Wine, StringComparer.OrdinalIgnoreCase)
-                .Select(w => new StoreWine(w.Grape, w.Wine, w.Price, w.Tier))
+                .Select(w => new StoreWine(
+                    w.Grape, w.Wine, w.Price, w.Tier, KeyNormaliser.Product(w.Wine),
+                    ShoppingAisleCatalog.Alcohol, ShoppingAisleCatalog.SortOrder(ShoppingAisleCatalog.Alcohol)))
                 .ToList();
 
             stores.Add(new StoreShoppingList(store, groceries.Sum(g => g.Saving), groceries, storeWines));
@@ -115,11 +125,14 @@ public static class ShoppingListBuilder
             foreach (var offer in offers.Where(o => o.EffectivePrice == cheapest))
             {
                 var saving = Math.Max(0, product.LastPricePaid - offer.EffectivePrice);
+                if (saving <= 0) continue;
+                var aisle = ShoppingAisleCatalog.Classify(product.Name);
                 var item = new StoreGroceryItem(
                     product.Name, offer.EffectivePrice, saving, product.LastPricePaid,
                     product.LastPurchasedStore, product.LastPurchasedOn, offer.Deal,
                     offer.MinimumQuantity, offer.CheckoutCost, offer.LoyaltyRequired,
-                    offer.CheckedOn, offer.SourceUrl);
+                    offer.CheckedOn, offer.SourceUrl, product.Key, product.ProductKey, aisle,
+                    ShoppingAisleCatalog.SortOrder(aisle));
                 if (!groceriesByStore.TryGetValue(offer.Store, out var storeItems))
                     groceriesByStore[offer.Store] = storeItems = [];
                 storeItems.Add(item);
@@ -143,7 +156,9 @@ public static class ShoppingListBuilder
                     .OrderBy(w => WineCatalog.TierRank(w.Tier))
                     .ThenBy(w => w.Grape, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(w => w.Wine, StringComparer.OrdinalIgnoreCase)
-                    .Select(w => new StoreWine(w.Grape, w.Wine, w.Price, w.Tier))
+                    .Select(w => new StoreWine(
+                        w.Grape, w.Wine, w.Price, w.Tier, KeyNormaliser.Product(w.Wine),
+                        ShoppingAisleCatalog.Alcohol, ShoppingAisleCatalog.SortOrder(ShoppingAisleCatalog.Alcohol)))
                     .ToList();
                 return new StoreShoppingList(store, groceries.Sum(g => g.Saving), groceries, storeWines);
             })

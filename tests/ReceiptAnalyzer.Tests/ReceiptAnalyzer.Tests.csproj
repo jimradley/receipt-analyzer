@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\ReceiptAnalyzer.Jobs\ReceiptAnalyzer.Jobs.csproj" />
     <ProjectReference Include="..\..\src\ReceiptAnalyzer.Api\ReceiptAnalyzer.Api.csproj" />
     <ProjectReference Include="..\..\src\ReceiptAnalyzer.Bridge\ReceiptAnalyzer.Bridge.csproj" />
+    <ProjectReference Include="..\..\src\ReceiptAnalyzer.Pwa\ReceiptAnalyzer.Pwa.csproj" />
   </ItemGroup>
 
 </Project>

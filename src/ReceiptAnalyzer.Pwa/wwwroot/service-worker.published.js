@@ -1,7 +1,7 @@
 // Caution! Be sure you understand the caveats before publishing an application with
 // offline support. See https://aka.ms/blazor-offline-considerations
 //
-// build-stamp: 2026-09-06T10:00Z-store-scroll — this comment MUST change on every deploy that touches
+// build-stamp: 2026-09-12T-shopping-list — this comment MUST change on every deploy that touches
 // client assets. The browser detects a service-worker update only via a byte-for-byte compare of
 // THIS file's own text (never the imported service-worker-assets.js manifest, and never anything
 // served through this worker's own fetch handler, which serves index.html cache-first and so can

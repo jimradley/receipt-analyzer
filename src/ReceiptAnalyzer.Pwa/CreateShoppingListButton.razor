@@ -1,0 +1,63 @@
+@implements IDisposable
+@inject ShoppingBasketService Basket
+@inject IJSRuntime JS
+
+<div class="create-list">
+    <button type="button" class="btn btn-primary" @onclick="CreateAsync" disabled="@(Basket.ItemCount == 0 || _busy)">
+        @if (_busy)
+        {
+            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+        }
+        Create list
+        @if (Basket.ItemCount > 0)
+        {
+            <span class="badge text-bg-light ms-2">@Basket.ItemCount</span>
+        }
+    </button>
+    @if (_message is not null)
+    {
+        <span class="small @(_copyFailed ? "text-danger" : "text-success")" role="status">@_message</span>
+    }
+</div>
+
+@code {
+    private bool _busy;
+    private bool _copyFailed;
+    private string? _message;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Basket.Changed += OnBasketChanged;
+        await Basket.InitializeAsync();
+    }
+
+    private async Task CreateAsync()
+    {
+        var text = ShoppingListComposer.Build(Basket.Selections);
+        if (text.Length == 0) return;
+
+        _busy = true;
+        _message = null;
+        try
+        {
+            var copied = await JS.InvokeAsync<bool>("shoppingList.createDraft", text);
+            _copyFailed = !copied;
+            _message = copied
+                ? "Copied to clipboard and opened as an email draft."
+                : "Email draft opened, but the browser could not copy the list.";
+        }
+        catch (Exception ex)
+        {
+            _copyFailed = true;
+            _message = "Could not create the list: " + ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void OnBasketChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Basket.Changed -= OnBasketChanged;
+}

@@ -1,12 +1,15 @@
 @page "/stores"
 @using System.Net.Http.Json
 @inject HttpClient Http
+@inject ShoppingBasketService Basket
 
 <PageTitle>Receipt Analyzer — Stores</PageTitle>
 
 <div class="stores">
     <h1 class="stores__title">Shopping by store</h1>
     <p class="text-muted">The cheapest current store for every exact product and pack in your purchase history, plus your rated wines.</p>
+
+    <CreateShoppingListButton />
 
     @if (_error is not null)
     {
@@ -72,14 +75,21 @@
                 <div class="card-body">
                     @if (store.Groceries.Count > 0)
                     {
+                        <div class="table-responsive">
                         <table class="table table-sm align-middle mb-3">
                             <thead>
-                                <tr><th>Item</th><th class="text-end">Best price</th><th class="text-end">Save</th><th>Vs.</th></tr>
+                                <tr><th class="selection-column"><span class="visually-hidden">Select</span></th><th>Item</th><th class="text-end">Best price</th><th class="text-end">Save</th><th>Vs.</th></tr>
                             </thead>
                             <tbody>
                                 @foreach (var g in store.Groceries)
                                 {
                                     <tr>
+                                        <td class="selection-column">
+                                            <input class="form-check-input shopping-check" type="checkbox"
+                                                   checked="@Basket.Contains(GrocerySelectionId(store, g))"
+                                                   @onchange="args => ToggleGroceryAsync(store, g, args)"
+                                                   aria-label="Add @g.Item from @store.Store to shopping list" />
+                                        </td>
                                         <td>
                                             @if (g.SourceUrl is not null)
                                             {
@@ -112,19 +122,27 @@
                                 }
                             </tbody>
                         </table>
+                        </div>
                     }
 
                     @if (store.Wines.Count > 0)
                     {
                         <h6 class="text-muted">🍷 Wines here</h6>
+                        <div class="table-responsive">
                         <table class="table table-sm mb-0">
                             <thead>
-                                <tr><th>Wine</th><th>Style</th><th class="text-end">Price</th><th></th></tr>
+                                <tr><th class="selection-column"><span class="visually-hidden">Select</span></th><th>Wine</th><th>Style</th><th class="text-end">Price</th><th></th></tr>
                             </thead>
                             <tbody>
                                 @foreach (var w in store.Wines)
                                 {
                                     <tr>
+                                        <td class="selection-column">
+                                            <input class="form-check-input shopping-check" type="checkbox"
+                                                   checked="@Basket.Contains(WineSelectionId(store, w))"
+                                                   @onchange="args => ToggleWineAsync(store, w, args)"
+                                                   aria-label="Add @w.Wine from @store.Store to shopping list" />
+                                        </td>
                                         <td>@w.Wine</td>
                                         <td class="text-muted">@w.Grape</td>
                                         <td class="text-end">@w.Price</td>
@@ -133,6 +151,7 @@
                                 }
                             </tbody>
                         </table>
+                        </div>
                     }
 
                     @if (store.Groceries.Count == 0 && store.Wines.Count == 0)
@@ -186,6 +205,7 @@
     {
         try
         {
+            await Basket.InitializeAsync();
             _result = await Http.GetFromJsonAsync<ShoppingListResult>("api/shopping-list");
         }
         catch (Exception ex)
@@ -204,14 +224,32 @@
     private sealed record StoreGroceryItem(
         string Item, decimal BestPrice, decimal Saving, decimal PricePaid, string StorePaid, string LastSeen,
         string? Deal, int MinimumQuantity, decimal? CheckoutCost, bool LoyaltyRequired,
-        string? CheckedOn, string? SourceUrl);
+        string? CheckedOn, string? SourceUrl, string Key, string ProductKey, string Aisle, int AisleOrder);
 
     private sealed record UnpricedInventoryItem(string Item, string? Pack, string Status, string? Error, string LastPurchasedOn);
     private sealed record RefreshState(
         string Status, int PublishedBatch, int Total, int Processed, int Remaining,
         string? LastPublishedAt, string? NextBatchAt);
 
-    private sealed record StoreWine(string Grape, string Wine, string Price, string Tier);
+    private sealed record StoreWine(
+        string Grape, string Wine, string Price, string Tier,
+        string Key, string Aisle, int AisleOrder);
+
+    private static string GrocerySelectionId(StoreShoppingList store, StoreGroceryItem item) =>
+        $"store:grocery:{store.Store}:{item.Key}";
+
+    private static string WineSelectionId(StoreShoppingList store, StoreWine wine) =>
+        $"store:wine:{store.Store}:{wine.Key}";
+
+    private Task ToggleGroceryAsync(StoreShoppingList store, StoreGroceryItem item, ChangeEventArgs args) =>
+        Basket.SetAsync(new ShoppingSelection(
+            GrocerySelectionId(store, item), item.ProductKey, item.Item, item.Aisle, item.AisleOrder, store.Store),
+            args.Value is true);
+
+    private Task ToggleWineAsync(StoreShoppingList store, StoreWine wine, ChangeEventArgs args) =>
+        Basket.SetAsync(new ShoppingSelection(
+            WineSelectionId(store, wine), wine.Key, wine.Wine, wine.Aisle, wine.AisleOrder, store.Store),
+            args.Value is true);
 
     private static int ItemCount(StoreShoppingList store) => store.Groceries.Count + store.Wines.Count;
     private int PricedCount => _result is null ? 0 : _result.InventoryTotal - _result.UnpricedProducts.Count;

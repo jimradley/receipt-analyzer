@@ -60,6 +60,20 @@ public sealed class InventoryTests : IDisposable
     }
 
     [Fact]
+    public void Shopping_list_hides_inventory_products_with_no_real_saving()
+    {
+        var product = new InventoryProduct(
+            "beans|400g", "beans", "400g", "Baked Beans 400g", 1, "2026-09-05",
+            "Asda", 1m, InventoryMatchStatus.Matched, Offers:
+            [new("Morrisons", 1m, 1m, 1, 1m, null, false, "2026-09-05", "https://example.test/beans")]);
+
+        var result = ShoppingListBuilder.Build(new InventoryData { Products = [product] }, []);
+
+        Assert.Empty(result.Stores);
+        Assert.Empty(result.UnpricedProducts!);
+    }
+
+    [Fact]
     public void Trolley_parser_reads_supported_offers_and_multibuy_checkout_cost()
     {
         const string html = """
