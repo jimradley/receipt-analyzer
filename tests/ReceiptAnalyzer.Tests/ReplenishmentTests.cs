@@ -27,6 +27,8 @@ public class ReplenishmentTests
         Assert.Equal("Overdue", milk.Status);
         Assert.Equal(-2, milk.DueInDays);
         Assert.Equal(4, milk.PurchaseCount);
+        Assert.Equal(ShoppingAisleCatalog.DairyAndEggs, milk.Aisle);
+        Assert.Equal(ShoppingAisleCatalog.SortOrder(ShoppingAisleCatalog.DairyAndEggs), milk.AisleOrder);
     }
 
     /// <summary>Buys every 21 days, last 5 days ago → on track (16 days to go).</summary>
@@ -124,5 +126,31 @@ public class ReplenishmentTests
 
         var butter = Assert.Single(ReplenishmentBuilder.Build(history, Today).Staples);
         Assert.Equal(new[] { "Lidl", "Asda", "Aldi" }, butter.Stores);
+    }
+
+    [Fact]
+    public void Current_cheapest_store_overrides_historical_store_list()
+    {
+        var history = History(
+            Rec("Milk 2L", "Asda", Today.AddDays(-28)),
+            Rec("Milk 2L", "Asda", Today.AddDays(-14)),
+            Rec("Milk 2L", "Asda", Today));
+        var inventory = new InventoryData
+        {
+            Products =
+            [
+                new("milk|2l", "milk", "2L", "Milk 2L", 3, Today.ToString("yyyy-MM-dd"), "Asda", 2m,
+                    InventoryMatchStatus.Matched, Offers:
+                    [
+                        new("Tesco", 1.50m, 1.50m, 1, 1.50m, null, false, "2026-09-12", "https://www.trolley.co.uk/product/milk"),
+                        new("Aldi", 1.40m, 1.40m, 1, 1.40m, null, false, "2026-09-12", "https://www.trolley.co.uk/product/milk")
+                    ])
+            ]
+        };
+
+        var result = ReplenishmentBuilder.WithCurrentPrices(
+            ReplenishmentBuilder.Build(history, Today), inventory);
+
+        Assert.Equal(new[] { "Aldi" }, Assert.Single(result.Staples).CheapestStores);
     }
 }

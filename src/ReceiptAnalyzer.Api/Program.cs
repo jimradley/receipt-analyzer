@@ -174,8 +174,12 @@ app.MapPost("/api/ledger/buy-elsewhere/refresh-prices",
     .RequireAuthorization();
 
 // Replenishment: learned cadence per regularly-bought staple, flagged Overdue / DueSoon / OnTrack.
-app.MapGet("/api/staples", (PurchaseHistoryStore history) =>
-    Results.Ok(ReplenishmentBuilder.Build(history.Load(), LondonToday())))
+app.MapGet("/api/staples", (PurchaseHistoryStore history, InventoryStore inventory) =>
+{
+    var purchaseHistory = history.Load();
+    var current = ReplenishmentBuilder.Build(purchaseHistory, LondonToday());
+    return Results.Ok(ReplenishmentBuilder.WithCurrentPrices(current, inventory.Synchronise(purchaseHistory)));
+})
     .RequireAuthorization();
 
 // Spend dashboard + repeat-offender habits (US-owned / ultra-processed) over the purchase history.

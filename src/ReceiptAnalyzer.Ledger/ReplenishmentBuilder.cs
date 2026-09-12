@@ -11,7 +11,10 @@ public sealed record StaplePrediction(
     string Status,        // "Overdue" | "DueSoon" | "OnTrack"
     decimal LastUnitPrice,
     IReadOnlyList<string> Stores,
-    double Regularity     // 0..1; higher = more evenly spaced buys (more trustworthy)
+    double Regularity,    // 0..1; higher = more evenly spaced buys (more trustworthy)
+    string Aisle = ShoppingAisleCatalog.Other,
+    int AisleOrder = 13,
+    IReadOnlyList<string>? CheapestStores = null
 );
 
 public sealed record ReplenishmentResult(
@@ -59,9 +62,11 @@ public static class ReplenishmentBuilder
                 .Select(g => g.Key)
                 .ToList();
 
+            var aisle = ShoppingAisleCatalog.Classify(mostRecent.Item);
             staples.Add(new StaplePrediction(
                 group.Key, mostRecent.Item, dates.Count, cadence, last, dueInDays, status,
-                mostRecent.UnitPrice, stores, Regularity(gaps)));
+                mostRecent.UnitPrice, stores, Regularity(gaps), aisle,
+                ShoppingAisleCatalog.SortOrder(aisle)));
         }
 
         var ordered = staples
@@ -70,6 +75,31 @@ public static class ReplenishmentBuilder
             .ToList();
 
         return new ReplenishmentResult(ordered, insufficient);
+    }
+
+    /// <summary>Decorates staple predictions with the current cheapest known store(s) from inventory.</summary>
+    public static ReplenishmentResult WithCurrentPrices(ReplenishmentResult result, InventoryData inventory)
+    {
+        var updated = result.Staples.Select(staple =>
+        {
+            var productKey = KeyNormaliser.Product(staple.Item);
+            var product = inventory.Products
+                .Where(p => string.Equals(p.ProductKey, productKey, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(p => p.LastPurchasedOn, StringComparer.Ordinal)
+                .FirstOrDefault();
+            var offers = product?.CurrentOffers ?? [];
+            IReadOnlyList<string> cheapest = offers.Count == 0 ? [] : offers
+                .GroupBy(o => o.EffectivePrice)
+                .OrderBy(g => g.Key)
+                .First()
+                .Select(o => o.Store)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return staple with { CheapestStores = cheapest };
+        }).ToList();
+
+        return new ReplenishmentResult(updated, result.InsufficientDataItems);
     }
 
     private static int Median(IReadOnlyList<int> values)
