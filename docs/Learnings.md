@@ -210,6 +210,7 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Root cause:** the service worker's own build-stamp comment had not changed, so the browser considered the worker byte-for-byte identical and continued serving the old cached Blazor bundle. A healthy container and current API response did not prove the installed client had updated.
 - **Fix:** change the published service-worker stamp on every client-asset deploy, rebuild the published WASM output, restart the container, and verify the live worker bytes before asking the user to reload.
 - **Rule:** for installed PWAs, treat service-worker invalidation as part of deployment acceptance; verify both server health and client asset version, then close/reopen or hard-refresh the client.
+- **Recurred 2026-09-27:** an `app.css` change (Items-table wrapping fix) was published and the container rebuilt/verified healthy, but the build-stamp was not bumped — same failure, in a fresh session, despite this entry already existing. The gap wasn't knowledge, it was process: nothing forced a check of this file before the deploy was called done. The user had to report the bug was still visible before the real cause was found. **This is now also a WHEN/DO bullet in `CLAUDE.md`** so it surfaces automatically instead of depending on remembering to read this log.
 
 ---
 
