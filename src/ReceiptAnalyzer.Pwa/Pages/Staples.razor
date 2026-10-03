@@ -110,7 +110,7 @@
 
     private static string CheapestStoresText(StaplePrediction s) => s.CheapestStores is { Count: > 0 }
         ? string.Join(", ", s.CheapestStores)
-        : "No current price";
+        : s.PriceNote ?? "No current price";
 
     private static decimal? PriceDelta(StaplePrediction s) =>
         s.CheapestPrice is { } cheapest && s.LastUnitPrice > 0 ? cheapest - s.LastUnitPrice : null;
@@ -141,7 +141,7 @@
     private sealed record StaplePrediction(
         string Key, string Item, int PurchaseCount, int CadenceDays, DateOnly LastPurchased,
         int DueInDays, string Status, decimal LastUnitPrice, List<string> Stores, double Regularity,
-        string Aisle, int AisleOrder, List<string>? CheapestStores = null, decimal? CheapestPrice = null);
+        string Aisle, int AisleOrder, List<string>? CheapestStores = null, decimal? CheapestPrice = null, string? PriceNote = null);
 
     private static string StapleSelectionId(StaplePrediction staple, string? store) =>
         $"staple:{staple.Key}:{store ?? "unspecified"}";

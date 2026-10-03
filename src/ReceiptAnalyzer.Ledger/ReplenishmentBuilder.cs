@@ -15,7 +15,8 @@ public sealed record StaplePrediction(
     string Aisle = ShoppingAisleCatalog.Other,
     int AisleOrder = 13,
     IReadOnlyList<string>? CheapestStores = null,
-    decimal? CheapestPrice = null  // effective unit price at the cheapest store(s)
+    decimal? CheapestPrice = null,  // effective unit price at the cheapest store(s)
+    string? PriceNote = null        // why a current price is withheld, when it is
 );
 
 public sealed record ReplenishmentResult(
@@ -83,21 +84,27 @@ public static class ReplenishmentBuilder
     {
         var updated = result.Staples.Select(staple =>
         {
-            // The staple's own key is the canonical product key; the display name may be an
-            // abbreviated receipt line ("SMKD HOUMOUS") that normalises to a different key.
-            var itemKey = KeyNormaliser.Product(staple.Item);
-            // Several pack variants can share a product key: prefer one that has current offers.
-            var product = inventory.Products
-                .Where(p => string.Equals(p.ProductKey, staple.Key, StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(p.ProductKey, itemKey, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(p => p.CurrentOffers.Count > 0)
-                .ThenByDescending(p => p.LastPurchasedOn, StringComparer.Ordinal)
-                .FirstOrDefault();
+            var (product, fuzzy) = FindProduct(staple, inventory);
             var offers = product?.CurrentOffers ?? [];
             var cheapestGroup = offers.Count == 0 ? null : offers
                 .GroupBy(o => o.EffectivePrice)
                 .OrderBy(g => g.Key)
                 .First();
+
+            // A price is only trustworthy when the sizes are known to match. With no pack on the
+            // product (or a fuzzy name match) a wildly different price almost certainly means a
+            // different size or variant. Even with a known pack, an extreme gap points at a bad
+            // last-paid figure. Withhold the price rather than show a misleading saving.
+            if (cheapestGroup is not null && staple.LastUnitPrice > 0)
+            {
+                var ratio = cheapestGroup.Key / staple.LastUnitPrice;
+                var packUnknown = fuzzy || string.IsNullOrWhiteSpace(product!.Pack);
+                if (packUnknown && (ratio < ImplausiblyLow || ratio > ImplausiblyHigh))
+                    return staple with { CheapestStores = [], CheapestPrice = null, PriceNote = "Pack size unclear" };
+                if (!packUnknown && (ratio < ExtremelyLow || ratio > ExtremelyHigh))
+                    return staple with { CheapestStores = [], CheapestPrice = null, PriceNote = "Last price looks wrong" };
+            }
+
             IReadOnlyList<string> cheapest = cheapestGroup is null ? [] : cheapestGroup
                 .Select(o => o.Store)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -107,6 +114,42 @@ public static class ReplenishmentBuilder
         }).ToList();
 
         return new ReplenishmentResult(updated, result.InsufficientDataItems);
+    }
+
+    private const decimal ImplausiblyLow = 0.5m;
+    private const decimal ImplausiblyHigh = 1.6m;
+    private const decimal ExtremelyLow = 0.3m;
+    private const decimal ExtremelyHigh = 3.0m;
+
+    /// <summary>
+    /// Finds the inventory product for a staple. The staple's own key is the canonical product key;
+    /// the display name may be an abbreviated receipt line ("SMKD HOUMOUS") that normalises to a
+    /// different key. Several pack variants can share a key, so prefer one that has current offers.
+    /// Failing an exact key, a unique product whose key contains every word of the staple's key
+    /// ("yeo-valley-kefir" in "yeo-valley-organic-kefir") is used and flagged as a fuzzy match.
+    /// </summary>
+    private static (InventoryProduct? Product, bool Fuzzy) FindProduct(StaplePrediction staple, InventoryData inventory)
+    {
+        var itemKey = KeyNormaliser.Product(staple.Item);
+        var exact = inventory.Products
+            .Where(p => string.Equals(p.ProductKey, staple.Key, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(p.ProductKey, itemKey, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(p => p.CurrentOffers.Count > 0)
+            .ThenByDescending(p => p.LastPurchasedOn, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (exact is { CurrentOffers.Count: > 0 }) return (exact, false);
+
+        var words = staple.Key.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < 2) return (exact, false);
+        var candidates = inventory.Products
+            .Where(p => p.CurrentOffers.Count > 0)
+            .Select(p => (Product: p, Words: p.ProductKey.Split('-', StringSplitOptions.RemoveEmptyEntries)))
+            .Where(c => c.Words.Length - words.Length is > 0 and <= 2 &&
+                        words.All(w => c.Words.Contains(w, StringComparer.OrdinalIgnoreCase)))
+            .ToList();
+        var distinctKeys = candidates.Select(c => c.Product.ProductKey).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (distinctKeys.Count != 1) return (exact, false);
+        return (candidates.OrderByDescending(c => c.Product.LastPurchasedOn, StringComparer.Ordinal).First().Product, true);
     }
 
     private static int Median(IReadOnlyList<int> values)

@@ -184,4 +184,76 @@ public class ReplenishmentTests
         Assert.Equal(new[] { "Aldi" }, staple.CheapestStores);
         Assert.Equal(1.40m, staple.CheapestPrice);
     }
+
+    private static StaplePrediction OneStaple(string item) => Assert.Single(ReplenishmentBuilder.Build(History(
+        Rec(item, "Morrisons", Today.AddDays(-28), 3.00m),
+        Rec(item, "Morrisons", Today.AddDays(-14), 3.00m),
+        Rec(item, "Morrisons", Today, 3.00m)), Today).Staples);
+
+    private static InventoryData Inventory(string productKey, string? pack, decimal price) => new()
+    {
+        Products =
+        [
+            new($"{productKey}|{pack ?? "unknown-size"}", productKey, pack, "P", 3, Today.ToString("yyyy-MM-dd"), "Morrisons", 3m,
+                InventoryMatchStatus.Matched, Offers:
+                [new("Aldi", price, price, 1, price, null, false, "2026-09-12", "https://www.trolley.co.uk/product/p")])
+        ]
+    };
+
+    [Fact]
+    public void Implausible_price_with_unknown_pack_is_withheld()
+    {
+        var staple = OneStaple("Best Prosecco");
+        var result = ReplenishmentBuilder.WithCurrentPrices(
+            new ReplenishmentResult([staple], 0), Inventory(staple.Key, null, 1.00m));
+
+        var priced = Assert.Single(result.Staples);
+        Assert.Null(priced.CheapestPrice);
+        Assert.Empty(priced.CheapestStores!);
+        Assert.Equal("Pack size unclear", priced.PriceNote);
+    }
+
+    [Fact]
+    public void Same_price_gap_is_kept_when_the_pack_is_known()
+    {
+        var staple = OneStaple("Best Prosecco");
+        var result = ReplenishmentBuilder.WithCurrentPrices(
+            new ReplenishmentResult([staple], 0), Inventory(staple.Key, "75cl", 1.00m));
+
+        Assert.Equal(1.00m, Assert.Single(result.Staples).CheapestPrice);
+    }
+
+    [Fact]
+    public void Staple_key_words_contained_in_one_inventory_key_fuzzy_match()
+    {
+        var staple = OneStaple("Yeo Valley Kefir");
+        var result = ReplenishmentBuilder.WithCurrentPrices(
+            new ReplenishmentResult([staple], 0), Inventory("yeo-valley-organic-kefir", null, 3.00m));
+
+        Assert.Equal(new[] { "Aldi" }, Assert.Single(result.Staples).CheapestStores);
+    }
+
+    [Fact]
+    public void Ambiguous_fuzzy_match_is_ignored()
+    {
+        var staple = OneStaple("Yeo Valley Kefir");
+        var inventory = Inventory("yeo-valley-organic-kefir", null, 3.00m);
+        inventory.Products.AddRange(Inventory("yeo-valley-plain-kefir", null, 3.00m).Products);
+
+        var result = ReplenishmentBuilder.WithCurrentPrices(new ReplenishmentResult([staple], 0), inventory);
+
+        Assert.Empty(Assert.Single(result.Staples).CheapestStores!);
+    }
+
+    [Fact]
+    public void Extreme_gap_is_withheld_even_when_the_pack_is_known()
+    {
+        var staple = OneStaple("Pepsi Max Cherry");
+        var result = ReplenishmentBuilder.WithCurrentPrices(
+            new ReplenishmentResult([staple], 0), Inventory(staple.Key, "2l", 0.60m));
+
+        var priced = Assert.Single(result.Staples);
+        Assert.Null(priced.CheapestPrice);
+        Assert.Equal("Last price looks wrong", priced.PriceNote);
+    }
 }
