@@ -182,6 +182,7 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Root cause:** the work was modelled as one large refresh instead of a resumable queue, and deterministic product pages were unnecessarily sent through the agent.
 - **Fix:** materialise an exact product-plus-pack inventory from purchase history; fetch known product pages directly; send only small ambiguous candidate sets to a tool-free, low-cost matcher; publish each batch atomically, then wait an hour before the next batch. Persist status, counters, failures, and the next-batch time so restarts do not erase progress.
 - **Rule:** for large fan-out refreshes, make the queue durable, keep the deterministic path outside the LLM, cap ambiguous work, and make every successful batch independently visible.
+- **Update 2026-10-03:** the hourly gap proved far too conservative (see §25); pacing is now configurable and defaults to a short gap.
 
 ## 19. A successful deployment can still serve stale control-plane code
 
@@ -214,6 +215,27 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 
 ---
 
+## 23. `docker compose build` ships the last `dotnet publish`, not your source
+
+- **What bit us:** `docker compose up -d --build` after a code change reported success but the container was still the old image. The new setting (a decimal minutes value) then crash-looped the *old* binary at startup because it still bound the value as an integer.
+- **Root cause:** the Dockerfile is runtime-only and copies the host `publish/` folder. Nothing rebuilds that folder, so compose finds nothing changed and reuses the cached layers, in about a second.
+- **Fix:** always `dotnet publish src/ReceiptAnalyzer.Api/ReceiptAnalyzer.Api.csproj -c Release -o publish`, then `docker compose build`, then `docker compose up -d --no-build`; confirm the image `Created` time moved.
+- **Rule:** a sub-two-second image build is a red flag. Verify the image timestamp, and tag the previous image (`docker tag receipt-analyzer:latest receipt-analyzer:pre-<date>`) before replacing it. A rebuild also ships every uncommitted working-tree change, so check `git status` first.
+
+## 24. An HTTP client timeout is an `OperationCanceledException`
+
+- **What bit us:** one slow product-page request hit the 30 s `HttpClient.Timeout` and the whole price-refresh batch was thrown away and retried, because the per-item `catch` was filtered with `when (ex is not OperationCanceledException)`.
+- **Root cause:** `TaskCanceledException` derives from `OperationCanceledException`, so a timeout looks identical to a real cancellation under that filter.
+- **Fix:** filter on the token instead: `when (!ct.IsCancellationRequested)`. A timeout then fails only that item; genuine cancellation still propagates. Test with a handler that throws `TaskCanceledException`.
+- **Rule:** never use the exception type to tell "shutting down" from "timed out"; check the cancellation token.
+
+## 25. Refresh pacing: measure where the time goes, and guard displayed price comparisons
+
+- **What bit us:** the grocery price refresh took 12+ hours although each batch needed about 30 s of real work. The fixed hourly gap between batches (a politeness/budget throttle from §18) was ~99% of the elapsed time, and unresolved items were capped at 5 per batch, so most of the queue crawled. Separately, the Staples tab showed "No current price" for most items even after a successful refresh.
+- **Root cause:** (a) throttle values chosen up front and never measured against real batch cost; (b) the Staples page joined to the inventory on the abbreviated receipt display name instead of the staple's canonical key, and picked the most recently bought pack variant even when it was unmatched; (c) comparing a receipt line with an unknown-size catalogue product, or a mis-read last-paid figure (a line total stored as a unit price), produced absurd "savings".
+- **Fix:** shorter inter-batch delay, larger unresolved batch, bounded parallel fetches (3), one fetch per shared source URL, longer retry for unmatched items; join on the canonical key, prefer variants that have offers, fall back to a unique word-subset key match; withhold a price (with a reason) when the pack is unknown and the ratio to the last price is implausible, or extreme even with a known pack.
+- **Rule:** time one batch and the gap before tuning throttles; keep the defaults in `appsettings.json` (not only in compose); and never display a price comparison without a sanity check on unit size and on the last-paid figure.
+
 ## What worked / keep doing
 
 - **Runtime-only image + host publish** for Blazor WASM — reliable and fast; keep this split.
@@ -235,3 +257,6 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 11. Give each agentic call the narrowest working directory that still works — visibility of prior output is a capability, and prove a permission control by trying to violate it before deploying.
 12. Re-read every shared prompt/rules asset whenever code takes over a step a human used to drive; a stale workflow instruction becomes an instruction to duplicate or fight the pipeline (see §17).
 13. When deploying a PWA client change, bump the service-worker bytes and verify the live build stamp; a healthy API/container alone is insufficient (see §22).
+14. Rebuilding the image: `dotnet publish ... -o publish` first, then `docker compose build` and `up --no-build`; check the image timestamp moved (see §23).
+15. Per-item `catch` blocks in batch jobs filter on `ct.IsCancellationRequested`, never `is not OperationCanceledException` (see §24).
+16. Before tuning a refresh/throttle, time one batch and the gap between batches; guard any displayed price comparison against unit-size mismatches (see §25).
