@@ -14,7 +14,8 @@ public sealed record StaplePrediction(
     double Regularity,    // 0..1; higher = more evenly spaced buys (more trustworthy)
     string Aisle = ShoppingAisleCatalog.Other,
     int AisleOrder = 13,
-    IReadOnlyList<string>? CheapestStores = null
+    IReadOnlyList<string>? CheapestStores = null,
+    decimal? CheapestPrice = null  // effective unit price at the cheapest store(s)
 );
 
 public sealed record ReplenishmentResult(
@@ -82,21 +83,27 @@ public static class ReplenishmentBuilder
     {
         var updated = result.Staples.Select(staple =>
         {
-            var productKey = KeyNormaliser.Product(staple.Item);
+            // The staple's own key is the canonical product key; the display name may be an
+            // abbreviated receipt line ("SMKD HOUMOUS") that normalises to a different key.
+            var itemKey = KeyNormaliser.Product(staple.Item);
+            // Several pack variants can share a product key: prefer one that has current offers.
             var product = inventory.Products
-                .Where(p => string.Equals(p.ProductKey, productKey, StringComparison.OrdinalIgnoreCase))
-                .OrderByDescending(p => p.LastPurchasedOn, StringComparer.Ordinal)
+                .Where(p => string.Equals(p.ProductKey, staple.Key, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(p.ProductKey, itemKey, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(p => p.CurrentOffers.Count > 0)
+                .ThenByDescending(p => p.LastPurchasedOn, StringComparer.Ordinal)
                 .FirstOrDefault();
             var offers = product?.CurrentOffers ?? [];
-            IReadOnlyList<string> cheapest = offers.Count == 0 ? [] : offers
+            var cheapestGroup = offers.Count == 0 ? null : offers
                 .GroupBy(o => o.EffectivePrice)
                 .OrderBy(g => g.Key)
-                .First()
+                .First();
+            IReadOnlyList<string> cheapest = cheapestGroup is null ? [] : cheapestGroup
                 .Select(o => o.Store)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            return staple with { CheapestStores = cheapest };
+            return staple with { CheapestStores = cheapest, CheapestPrice = cheapestGroup?.Key };
         }).ToList();
 
         return new ReplenishmentResult(updated, result.InsufficientDataItems);

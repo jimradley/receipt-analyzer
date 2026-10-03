@@ -156,6 +156,96 @@ public sealed class InventoryTests : IDisposable
         Assert.All(complete.Products, p => Assert.NotEmpty(p.CurrentOffers));
     }
 
+    [Fact]
+    public async Task Products_sharing_a_source_url_are_fetched_once_per_batch()
+    {
+        var history = new PurchaseHistoryStore(_dir, NullLogger<PurchaseHistoryStore>.Instance);
+        history.Save(new PurchaseHistoryData
+        {
+            Records =
+            {
+                new("one", "One 100g", "Tesco", new(2026, 9, 1), 1, 2m, "a"),
+                new("two", "Two 100g", "Tesco", new(2026, 9, 1), 1, 3m, "b")
+            }
+        });
+        var inventory = new InventoryStore(_dir);
+        inventory.Synchronise(history.Load());
+        inventory.Update(data =>
+        {
+            data.Products = data.Products.Select(p => p with
+            {
+                SourceUrl = "https://www.trolley.co.uk/product/shared/ABC123",
+                MatchStatus = InventoryMatchStatus.Matched
+            }).ToList();
+            return true;
+        });
+
+        var handler = new CountingHandler(ProductHtml("Tesco", "1.00"));
+        var trolley = new TrolleyPriceClient(new HttpClient(handler) { BaseAddress = new("https://www.trolley.co.uk/") });
+        var options = new InventoryRefreshOptions { KnownBatchSize = 10, AgentBatchSize = 0 };
+        var service = new InventoryPriceRefreshService(
+            inventory, history, trolley, new NoMatcher(), options,
+            NullLogger<InventoryPriceRefreshService>.Instance);
+        var now = new DateTimeOffset(2026, 9, 5, 9, 0, 0, TimeSpan.Zero);
+
+        service.Start(new(2026, 9, 5), now);
+        Assert.True(await service.ProcessDueBatchAsync(new(2026, 9, 5), now, CancellationToken.None));
+
+        Assert.Equal(1, handler.Calls);
+        Assert.All(inventory.Load().Products, p => Assert.NotEmpty(p.CurrentOffers));
+    }
+
+    [Fact]
+    public async Task A_request_timeout_fails_only_that_product_and_still_publishes_the_batch()
+    {
+        var history = new PurchaseHistoryStore(_dir, NullLogger<PurchaseHistoryStore>.Instance);
+        history.Save(new PurchaseHistoryData
+        {
+            Records = { new("one", "One 100g", "Tesco", new(2026, 9, 1), 1, 2m, "a") }
+        });
+        var inventory = new InventoryStore(_dir);
+        inventory.Synchronise(history.Load());
+        inventory.Update(data =>
+        {
+            data.Products = data.Products.Select(p => p with
+            {
+                SourceUrl = "https://www.trolley.co.uk/product/slow/ABC123",
+                MatchStatus = InventoryMatchStatus.Matched
+            }).ToList();
+            return true;
+        });
+
+        var trolley = new TrolleyPriceClient(new HttpClient(new TimeoutHandler()) { BaseAddress = new("https://www.trolley.co.uk/") });
+        var service = new InventoryPriceRefreshService(
+            inventory, history, trolley, new NoMatcher(),
+            new InventoryRefreshOptions { KnownBatchSize = 10, AgentBatchSize = 0 },
+            NullLogger<InventoryPriceRefreshService>.Instance);
+        var now = new DateTimeOffset(2026, 9, 5, 9, 0, 0, TimeSpan.Zero);
+
+        service.Start(new(2026, 9, 5), now);
+        Assert.True(await service.ProcessDueBatchAsync(new(2026, 9, 5), now, CancellationToken.None));
+
+        var state = inventory.Load();
+        Assert.Equal(1, state.Refresh.PublishedBatch);
+        Assert.Equal(1, state.Refresh.Failed);
+    }
+
+    private sealed class TimeoutHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout of 30 seconds elapsing.");
+    }
+
+    private sealed class CountingHandler(string html) : HttpMessageHandler
+    {
+        public int Calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html) });
+        }
+    }
+
     private static string ProductHtml(string store, string price) =>
         $"<div class=\"comparison-table\"><div class=\"_item\"><svg title=\"{store}\"></svg><b>&pound;{price}</b></div><div class=\"disclaimer price\">";
 

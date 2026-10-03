@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ReceiptAnalyzer.Ledger;
@@ -76,33 +77,43 @@ public sealed class InventoryPriceRefreshService
             var unresolved = snapshot.Products.Where(p => pending.Contains(p.Key) && p.SourceUrl is null)
                 .Take(_options.AgentBatchSize).ToList();
 
-            var completed = new Dictionary<string, InventoryProduct>(StringComparer.OrdinalIgnoreCase);
+            var completed = new ConcurrentDictionary<string, InventoryProduct>(StringComparer.OrdinalIgnoreCase);
+            // Products sharing a source URL are fetched once per batch.
+            var offerCache = new ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<StorePriceOffer>>>>(
+                StringComparer.OrdinalIgnoreCase);
             var directRequests = 0;
-            foreach (var product in sourceKnown)
+            var parallel = new ParallelOptions
             {
-                completed[product.Key] = await RefreshKnownAsync(product, today, ct);
-                directRequests++;
-            }
+                MaxDegreeOfParallelism = Math.Max(1, _options.Concurrency),
+                CancellationToken = ct
+            };
 
-            var ambiguous = new List<ProductMatchRequest>();
-            foreach (var product in unresolved)
+            await Parallel.ForEachAsync(sourceKnown, parallel, async (product, token) =>
+            {
+                completed[product.Key] = await RefreshKnownAsync(product, today, offerCache, token);
+                Interlocked.Increment(ref directRequests);
+            });
+
+            var ambiguousBag = new ConcurrentBag<ProductMatchRequest>();
+            await Parallel.ForEachAsync(unresolved, parallel, async (product, token) =>
             {
                 try
                 {
                     var searchName = product.Pack is null ? product.Name : $"{product.Name} {product.Pack}";
-                    var candidates = await _trolley.SearchAsync(searchName, ct);
-                    directRequests++;
+                    var candidates = await _trolley.SearchAsync(searchName, token);
+                    Interlocked.Increment(ref directRequests);
                     var exact = candidates.FirstOrDefault(c =>
                         KeyNormaliser.PriceKey(c.Name).Equals(product.Key, StringComparison.OrdinalIgnoreCase));
                     if (exact is not null)
                     {
                         completed[product.Key] = await RefreshKnownAsync(
-                            product with { SourceUrl = exact.Url, MatchStatus = InventoryMatchStatus.Matched }, today, ct);
-                        directRequests++;
+                            product with { SourceUrl = exact.Url, MatchStatus = InventoryMatchStatus.Matched },
+                            today, offerCache, token);
+                        Interlocked.Increment(ref directRequests);
                     }
                     else if (candidates.Count > 0)
                     {
-                        ambiguous.Add(new ProductMatchRequest(product, candidates));
+                        ambiguousBag.Add(new ProductMatchRequest(product, candidates));
                     }
                     else
                     {
@@ -114,12 +125,13 @@ public sealed class InventoryPriceRefreshService
                         };
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (!token.IsCancellationRequested)
                 {
                     completed[product.Key] = Failed(product, ex.Message);
                 }
-            }
+            });
 
+            var ambiguous = ambiguousBag.ToList();
             var agentCalls = 0;
             if (ambiguous.Count > 0)
             {
@@ -132,7 +144,7 @@ public sealed class InventoryPriceRefreshService
                         if (matches.TryGetValue(request.Product.Key, out var url))
                         {
                             completed[request.Product.Key] = await RefreshKnownAsync(
-                                request.Product with { SourceUrl = url, MatchStatus = InventoryMatchStatus.Matched }, today, ct);
+                                request.Product with { SourceUrl = url, MatchStatus = InventoryMatchStatus.Matched }, today, offerCache, ct);
                             directRequests++;
                         }
                         else
@@ -146,7 +158,7 @@ public sealed class InventoryPriceRefreshService
                         }
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
                     agentCalls = 1;
                     foreach (var request in ambiguous) completed[request.Product.Key] = Failed(request.Product, ex.Message);
@@ -195,11 +207,16 @@ public sealed class InventoryPriceRefreshService
         }
     }
 
-    private async Task<InventoryProduct> RefreshKnownAsync(InventoryProduct product, DateOnly today, CancellationToken ct)
+    private async Task<InventoryProduct> RefreshKnownAsync(
+        InventoryProduct product, DateOnly today,
+        ConcurrentDictionary<string, Lazy<Task<IReadOnlyList<StorePriceOffer>>>> offerCache,
+        CancellationToken ct)
     {
         try
         {
-            var offers = await _trolley.GetOffersAsync(product.SourceUrl!, today, ct);
+            var url = product.SourceUrl!;
+            var offers = await offerCache.GetOrAdd(url,
+                u => new Lazy<Task<IReadOnlyList<StorePriceOffer>>>(() => _trolley.GetOffersAsync(u, today, ct))).Value;
             return product with
             {
                 MatchStatus = offers.Count == 0 ? InventoryMatchStatus.Unavailable : InventoryMatchStatus.Matched,
@@ -209,7 +226,7 @@ public sealed class InventoryPriceRefreshService
                 Error = offers.Count == 0 ? "The source currently lists no supported-store offer." : null
             };
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             return Failed(product, ex.Message);
         }

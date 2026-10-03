@@ -56,7 +56,7 @@
                                     <td class="text-muted">~@(s.CadenceDays)d</td>
                                     <td class="text-muted">@s.LastPurchased.ToString("d MMM yy")</td>
                                     <td class="text-end">£@s.LastUnitPrice.ToString("F2")</td>
-                                    <td class="text-muted"><small>@CheapestStoresText(s)</small></td>
+                                    <td class="text-muted"><small>@CheapestStoresText(s)</small>@if (s.CheapestPrice is { } cheapest){<span class="ms-1 fw-semibold @PriceDeltaClass(s)">£@cheapest.ToString("F2")</span><small class="ms-1 @PriceDeltaClass(s)">@PriceDeltaText(s)</small>}</td>
                                 </tr>
                             }
                         </tbody>
@@ -112,6 +112,22 @@
         ? string.Join(", ", s.CheapestStores)
         : "No current price";
 
+    private static decimal? PriceDelta(StaplePrediction s) =>
+        s.CheapestPrice is { } cheapest && s.LastUnitPrice > 0 ? cheapest - s.LastUnitPrice : null;
+
+    private static string PriceDeltaText(StaplePrediction s) => PriceDelta(s) switch
+    {
+        { } d when d <= -0.005m => $"(save £{-d:F2})",
+        { } d when d >= 0.005m => $"(+£{d:F2})",
+        _ => ""
+    };
+
+    private static string PriceDeltaClass(StaplePrediction s) => PriceDelta(s) switch
+    {
+        { } d when d <= -0.005m => "text-success",
+        _ => ""
+    };
+
     private static string RegularityColour(double r) =>
         r >= 0.66 ? "#198754" : r >= 0.33 ? "#ffc107" : "#adb5bd";
 
@@ -125,7 +141,7 @@
     private sealed record StaplePrediction(
         string Key, string Item, int PurchaseCount, int CadenceDays, DateOnly LastPurchased,
         int DueInDays, string Status, decimal LastUnitPrice, List<string> Stores, double Regularity,
-        string Aisle, int AisleOrder, List<string>? CheapestStores = null);
+        string Aisle, int AisleOrder, List<string>? CheapestStores = null, decimal? CheapestPrice = null);
 
     private static string StapleSelectionId(StaplePrediction staple, string? store) =>
         $"staple:{staple.Key}:{store ?? "unspecified"}";

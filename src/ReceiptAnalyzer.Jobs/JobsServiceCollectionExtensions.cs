@@ -95,12 +95,13 @@ public static class JobsServiceCollectionExtensions
     private static InventoryRefreshOptions BuildInventoryOptions(IConfiguration configuration) => new()
     {
         KnownBatchSize = configuration.GetValue("PriceInventory:KnownBatchSize", 50),
-        AgentBatchSize = configuration.GetValue("PriceInventory:AgentBatchSize", 5),
+        AgentBatchSize = configuration.GetValue("PriceInventory:AgentBatchSize", 20),
+        Concurrency = configuration.GetValue("PriceInventory:Concurrency", 3),
         RecentPurchaseDays = configuration.GetValue("PriceInventory:RecentPurchaseDays", 90),
         RecentRefreshDays = configuration.GetValue("PriceInventory:RecentRefreshDays", 7),
         OlderRefreshDays = configuration.GetValue("PriceInventory:OlderRefreshDays", 30),
-        UnmatchedRetryDays = configuration.GetValue("PriceInventory:UnmatchedRetryDays", 30),
-        BatchDelay = TimeSpan.FromMinutes(configuration.GetValue("PriceInventory:BatchDelayMinutes", 60)),
+        UnmatchedRetryDays = configuration.GetValue("PriceInventory:UnmatchedRetryDays", 90),
+        BatchDelay = TimeSpan.FromMinutes(configuration.GetValue("PriceInventory:BatchDelayMinutes", 0.5)),
         BridgeUrl = configuration["PriceInventory:BridgeUrl"] ??
                     configuration["Agent:ClaudeCode:BridgeUrl"] ?? "http://localhost:5095",
         BridgeKeyEnvVar = configuration["PriceInventory:BridgeKeyEnvVar"] ??

@@ -151,6 +151,37 @@ public class ReplenishmentTests
         var result = ReplenishmentBuilder.WithCurrentPrices(
             ReplenishmentBuilder.Build(history, Today), inventory);
 
-        Assert.Equal(new[] { "Aldi" }, Assert.Single(result.Staples).CheapestStores);
+        var staple = Assert.Single(result.Staples);
+        Assert.Equal(new[] { "Aldi" }, staple.CheapestStores);
+        Assert.Equal(1.40m, staple.CheapestPrice);
+    }
+
+    [Fact]
+    public void Current_prices_match_on_canonical_key_and_prefer_variants_with_offers()
+    {
+        var history = History(
+            Rec("MOORISH SMKD HOUMOUS", "Morrisons", Today.AddDays(-28)),
+            Rec("MOORISH SMKD HOUMOUS", "Morrisons", Today.AddDays(-14)),
+            Rec("MOORISH SMKD HOUMOUS", "Morrisons", Today));
+        var built = ReplenishmentBuilder.Build(history, Today);
+        var key = Assert.Single(built.Staples).Key;
+        var offer = new StorePriceOffer("Aldi", 1.40m, 1.40m, 1, 1.40m, null, false, "2026-09-12", "https://www.trolley.co.uk/product/x");
+        var inventory = new InventoryData
+        {
+            Products =
+            [
+                // Newer but unmatched variant sharing the key must not hide the matched one.
+                new($"{key}|unknown-size", key, null, "Unmatched", 3, Today.ToString("yyyy-MM-dd"), "Morrisons", 2m,
+                    InventoryMatchStatus.NotComparable),
+                new($"{key}|200g", key, "200g", "Matched", 3, Today.AddDays(-14).ToString("yyyy-MM-dd"), "Morrisons", 2m,
+                    InventoryMatchStatus.Matched, Offers: [offer])
+            ]
+        };
+
+        var result = ReplenishmentBuilder.WithCurrentPrices(built, inventory);
+
+        var staple = Assert.Single(result.Staples);
+        Assert.Equal(new[] { "Aldi" }, staple.CheapestStores);
+        Assert.Equal(1.40m, staple.CheapestPrice);
     }
 }
