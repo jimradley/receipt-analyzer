@@ -212,6 +212,9 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Fix:** change the published service-worker stamp on every client-asset deploy, rebuild the published WASM output, restart the container, and verify the live worker bytes before asking the user to reload.
 - **Rule:** for installed PWAs, treat service-worker invalidation as part of deployment acceptance; verify both server health and client asset version, then close/reopen or hard-refresh the client.
 - **Recurred 2026-09-27:** an `app.css` change (Items-table wrapping fix) was published and the container rebuilt/verified healthy, but the build-stamp was not bumped — same failure, in a fresh session, despite this entry already existing. The gap wasn't knowledge, it was process: nothing forced a check of this file before the deploy was called done. The user had to report the bug was still visible before the real cause was found. **This is now also a WHEN/DO bullet in `CLAUDE.md`** so it surfaces automatically instead of depending on remembering to read this log.
+- **New failure mode, 2026-10-07:** the weekly-monitor button was absent after repeated reopen/refresh attempts even though the new worker stamp and authenticated API were live. Public response headers showed the stable `service-worker-assets.js` URL cached for four hours. A changed worker is necessary but insufficient: its imported manifest can still be stale, so it can install an older bundle or fail integrity checks against mixed-build assets. Matching origin/public manifests at inspection time does not establish which manifest an existing client used earlier.
+- **Fix for the full update chain:** use a deployment-version query on the imported manifest; send no-store/revalidation headers for the worker, manifest, boot configuration and index; fetch install assets with the manifest version in their query and integrity verification, then store responses under canonical cache keys. Register a stable worker URL with `updateViaCache: 'none'`, explicitly check for updates, and reload once on controller change. Do not combine automatic controller-change reload with a new timestamp registration URL on every load: that can repeatedly replace the worker and reload the page.
+- **Acceptance evidence:** a headless browser loaded the public Stores page, found the actual weekly-monitor button, waited for worker installation, reloaded, and found it again with no page errors. `scripts/Verify-WeeklyMonitorClient.cjs` demonstrates this check; it mocks only the cookie-session probe and uses authenticated live shopping data, so it is a client-rendering/cache test, not a passkey test. Do not declare a UI publish complete from health and worker-stamp checks alone.
 
 ---
 
@@ -236,11 +239,20 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Fix:** shorter inter-batch delay, larger unresolved batch, bounded parallel fetches (3), one fetch per shared source URL, longer retry for unmatched items; join on the canonical key, prefer variants that have offers, fall back to a unique word-subset key match; withhold a price (with a reason) when the pack is unknown and the ratio to the last price is implausible, or extreme even with a known pack.
 - **Rule:** time one batch and the gap before tuning throttles; keep the defaults in `appsettings.json` (not only in compose); and never display a price comparison without a sanity check on unit size and on the last-paid figure.
 
+## 26. Notification tests must never inherit live runtime credentials
+
+- **What bit us:** a weekly-monitor test sent a synthetic product digest to the real Telegram destination while tests were running.
+- **Root cause:** the test supplied empty configuration, which allowed the notifier's production-file fallback. Installing the real runtime credential file while that suite was running changed the meaning of the fallback; the test then reported notification status `sent` rather than the expected missing-configuration failure.
+- **Fix:** explicitly set `Telegram:ConfigFile` to a nonexistent file inside isolated test storage. Re-run the suite with this override; all 256 tests passed. Report the accidental message as synthetic test data so it is not mistaken for a shopping recommendation.
+- **Rule:** configure notification tests with isolated files and mocked transport before starting the suite or provisioning live secrets. An empty configuration object is not isolation when production defaults can read host files or environment variables. Validate live bot/destination credentials with read-only calls unless a real test send is explicitly part of the task.
+
 ## What worked / keep doing
 
 - **Runtime-only image + host publish** for Blazor WASM — reliable and fast; keep this split.
 - **Env-driven config** (`ASPNETCORE_URLS`, provider via env) over hardcoded settings — fewer container surprises.
 - **Scrub + scan-gate before pushing** — caught the leak risk every time; cheap insurance.
+- **Browser verification after worker installation and reload** — proves the visible feature survived the cache update, beyond server health.
+- **Separate comparison baselines** — keep last purchase price and previous-week online price independently; same-store deals can still produce valid savings.
 
 ## Quick checklist for the next "containerise + go live" job
 
@@ -256,7 +268,8 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 10. When registering a Windows Service under a user account, set its Log On credentials via `services.msc`'s GUI, not `sc.exe ... password= *` — the console prompt can silently corrupt the password while still reporting success.
 11. Give each agentic call the narrowest working directory that still works — visibility of prior output is a capability, and prove a permission control by trying to violate it before deploying.
 12. Re-read every shared prompt/rules asset whenever code takes over a step a human used to drive; a stale workflow instruction becomes an instruction to duplicate or fight the pipeline (see §17).
-13. When deploying a PWA client change, bump the service-worker bytes and verify the live build stamp; a healthy API/container alone is insufficient (see §22).
+13. When deploying a PWA client change, bump worker bytes and the imported manifest version, check public cache headers, and verify the actual UI after worker installation and reload; a healthy API or current stamp alone is insufficient (see §22).
 14. Rebuilding the image: `dotnet publish ... -o publish` first, then `docker compose build` and `up --no-build`; check the image timestamp moved (see §23).
 15. Per-item `catch` blocks in batch jobs filter on `ct.IsCancellationRequested`, never `is not OperationCanceledException` (see §24).
 16. Before tuning a refresh/throttle, time one batch and the gap between batches; guard any displayed price comparison against unit-size mismatches (see §25).
+17. Before running notification tests or provisioning production credentials, explicitly isolate config paths and transport; never rely on empty configuration to disable production fallbacks (see §26).
