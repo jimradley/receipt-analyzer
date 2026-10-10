@@ -224,6 +224,7 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Root cause:** the Dockerfile is runtime-only and copies the host `publish/` folder. Nothing rebuilds that folder, so compose finds nothing changed and reuses the cached layers, in about a second.
 - **Fix:** always `dotnet publish src/ReceiptAnalyzer.Api/ReceiptAnalyzer.Api.csproj -c Release -o publish`, then `docker compose build`, then `docker compose up -d --no-build`; confirm the image `Created` time moved.
 - **Rule:** a sub-two-second image build is a red flag. Verify the image timestamp, and tag the previous image (`docker tag receipt-analyzer:latest receipt-analyzer:pre-<date>`) before replacing it. A rebuild also ships every uncommitted working-tree change, so check `git status` first.
+- **Addendum (2026-10-10):** `docker compose` from the source repo fails with "no configuration file provided". The compose file lives in the deploy directory outside the repo, so run the build from that directory. Confirm the runtime base-image tag exists before pinning it (see §2); this host published against `mcr.microsoft.com/dotnet/aspnet:10.0.12`.
 
 ## 24. An HTTP client timeout is an `OperationCanceledException`
 
@@ -246,6 +247,38 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Fix:** explicitly set `Telegram:ConfigFile` to a nonexistent file inside isolated test storage. Re-run the suite with this override; all 256 tests passed. Report the accidental message as synthetic test data so it is not mistaken for a shopping recommendation.
 - **Rule:** configure notification tests with isolated files and mocked transport before starting the suite or provisioning live secrets. An empty configuration object is not isolation when production defaults can read host files or environment variables. Validate live bot/destination credentials with read-only calls unless a real test send is explicitly part of the task.
 
+## 27. A .NET 10 retarget is not done when the projects compile
+
+Three separate traps on the move from `net9.0` to `net10.0` (SDK 10.0.303, ASP.NET packages and runtime image 10.0.12). Confirmed the same day: the test suite passed, the container reported runtime 10.0.12 with zero restarts, public health and the home page returned 200, the published service worker carried the new stamp, anonymous data routes stayed 401, and the host bridge health returned 200 on `net10.0`. A full receipt was not run through the new bridge. Keep the previous service folder until one is.
+
+### Two hosts, one public `Program` (CS0433)
+
+- **What bit us:** `dotnet test` failed with CS0433: `Program` exists in both the API host and the bridge host. `WebApplicationFactory<Program>` could not tell them apart.
+- **Root cause:** .NET 10 makes a top-level `Program` public. A test project that references two ASP.NET hosts therefore sees two public `Program` types.
+- **Fix:** alias the host that is not the factory target (`<Aliases>bridge</Aliases>` on that `ProjectReference`) and put `extern alias bridge;` plus `using bridge::...` at the top of the test files that use that host.
+- **Rule:** WHEN a test project references two ASP.NET entry points, alias the one that is not the `WebApplicationFactory` target before the first .NET 10 test run.
+
+### Publishing into a running Windows service folder leaves a mixed install
+
+- **What bit us:** `dotnet publish -o` the live service directory while the service was still running. Stop from a non-elevated shell was access denied, so the process never exited. Publish then failed on the locked exe and dll (MSB3026/MSB3027/MSB3021) but had already rewritten the unlocked `runtimeconfig.json`, `deps.json`, and pdb to the new framework.
+- **Root cause:** a failed overwrite is not atomic. Files the process does not lock are updated; the running binary stays old. The next start would load a new host config against the old binary. This is the same class of lock as §5, with a worse leftover: a mixed install that still looks healthy until restart.
+- **Fix:** restore those three unlocked files from a known-good copy of the same build while the old process is still healthy. Then publish to a side folder. With elevation, stop the service, confirm it is stopped, rename the live folder aside, copy the new folder into place, and start. If the swap fails and the process is not running, put the renamed folder back and start it. After the swap, check health and that `runtimeconfig.json` says `net10.0`.
+- **Rule:** never publish over a Windows service output directory. Publish beside it, and swap folders only after an elevated stop has confirmed the process exited.
+
+### A framework bump does not replace a vulnerable transitive package
+
+- **What bit us:** after the retarget, `dotnet list package --vulnerable` still reported `Microsoft.Bcl.Memory` 9.0.0 (NU1903, GHSA-73j8-2gch-69rq) in the Blazor project.
+- **Root cause:** Fido2 still pulls 9.0.0. The new framework packages do not override that transitive reference. The same advisory covers .NET 10 runtimes through 10.0.3; 10.0.4 or newer is the runtime fix, which is why the image is pinned to a confirmed `aspnet:10.0.12` tag rather than a floating `10.0`.
+- **Fix:** add a direct `PackageReference` to `Microsoft.Bcl.Memory` 9.0.14. A repeat audit showed no vulnerable packages in that project. Leave Fido2 on the last stable 4.x while 5.0.0 is still preview.
+- **Rule:** after any target-framework upgrade, re-run the vulnerability audit. If a transitive package is still in the affected range, pin it with a direct reference at the patched version.
+
+### Do not "fix" ASPDEPR005 by clearing only `KnownIPNetworks`
+
+- **What bit us:** the build warned that `ForwardedHeadersOptions.KnownNetworks` is obsolete and `KnownIPNetworks` should be used.
+- **Root cause:** in the 10.0.12 ASP.NET shared framework both properties are the same list. `KnownNetworks.Clear()` still clears the proxy allow-list. During the 10.0 RC, replacing only the old call with `KnownIPNetworks.Clear()` stopped forwarded headers being trusted (dotnet/aspnetcore#63627); clearing both was the workaround then. Switching only the new property now would be an untested change for the reverse-proxy setup.
+- **Fix:** leave the existing `KnownNetworks.Clear()` (and the matching proxies clear) as they are. Revisit only when that shared-list implementation changes, and then clear both.
+- **Rule:** an obsolete-API warning on forwarded headers is not a safe one-line rename.
+
 ## What worked / keep doing
 
 - **Runtime-only image + host publish** for Blazor WASM — reliable and fast; keep this split.
@@ -253,6 +286,8 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 - **Scrub + scan-gate before pushing** — caught the leak risk every time; cheap insurance.
 - **Browser verification after worker installation and reload** — proves the visible feature survived the cache update, beyond server health.
 - **Separate comparison baselines** — keep last purchase price and previous-week online price independently; same-store deals can still produce valid savings.
+- **Side-folder swap for a Windows service** — publish beside the live folder, rename the old folder out of the way, and keep it until a real request has gone through the new binary.
+- **Re-audit after a framework bump** — a direct package pin plus a confirmed runtime image tag, then `dotnet list package --vulnerable` again.
 
 ## Quick checklist for the next "containerise + go live" job
 
@@ -273,3 +308,8 @@ captured so we don't relearn them. Each entry: *what bit us → root cause → f
 15. Per-item `catch` blocks in batch jobs filter on `ct.IsCancellationRequested`, never `is not OperationCanceledException` (see §24).
 16. Before tuning a refresh/throttle, time one batch and the gap between batches; guard any displayed price comparison against unit-size mismatches (see §25).
 17. Before running notification tests or provisioning production credentials, explicitly isolate config paths and transport; never rely on empty configuration to disable production fallbacks (see §26).
+18. On a .NET 10 retarget, alias the second ASP.NET host in the test project before trusting `WebApplicationFactory<Program>` (see §27).
+19. Publish a Windows service to a side folder and swap only after an elevated stop. If a publish into the live folder was interrupted, restore `runtimeconfig.json` and `deps.json` from a known-good copy before the next start (see §27).
+20. Re-run `dotnet list package --vulnerable` after a target-framework change and pin any transitive package still in an affected range (see §27).
+21. Leave `KnownNetworks.Clear()` in place on ASP.NET 10.0.12; do not switch only to `KnownIPNetworks` (see §27).
+22. Run `docker compose` from the directory that contains the compose file, which is outside this repo (see §23).
